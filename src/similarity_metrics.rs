@@ -1,6 +1,6 @@
 use num_traits::sign::abs;
-use num_traits::{real::Real, Float};
-use std::fmt::Debug;
+use num_traits::{real::Real, Num, Float};
+use std::collections::HashSet;
 
 /// This function calculates the cosine similarity between two slices. 
 /// Geometrically, this is the cosine of the angle between two vectors.
@@ -16,32 +16,37 @@ use std::fmt::Debug;
 /// let slice_b = [0.0, 0.0, 0.0, 0.0, 1.0];
 /// let distance = cosine_similarity(&slice_a, &slice_b).unwrap();
 /// assert_eq!(distance, 1.0);
+/// let slice_a = [0, 0, 0, 0, 1];
+/// let slice_b = [0, 0, 0, 1, 0];
+/// let distance = cosine_similarity(&slice_a, &slice_b).unwrap();
+/// assert_eq!(distance, 0.0);
 /// ```
-pub fn cosine_similarity<T>(slice_a: &[T], slice_b: &[T]) -> Option<T>
+pub fn cosine_similarity<T>(slice_a: &[T], slice_b: &[T]) -> Option<f64>
 where
-T: std::ops::Mul<Output = T>
-+ std::ops::Add<Output = T>
-+ Real
-+ Copy
-+ std::iter::Sum<T>
-+ From<f64>
-+ Debug,
+    T: Copy + Num, f64: From<T>,
 {
     if slice_a.len() != slice_b.len() {
-        return None
+        return None;
     }
-    // If the slices are the same, the cosine similarity is 1
-    if slice_a == slice_b {
-        return Some(<T as std::convert::From<f64>>::from(1.0));
+
+    let mut dot_product = T::zero();
+    let mut norm_a_squared = T::zero();
+    let mut norm_b_squared = T::zero();
+
+    for (a, b) in slice_a.iter().zip(slice_b.iter()) {
+        let product = *a * *b;
+        dot_product = dot_product + product;
+        norm_a_squared = norm_a_squared + *a * *a;
+        norm_b_squared = norm_b_squared + *b * *b;
     }
-    let dot_product: T = slice_a.iter().zip(slice_b.iter()).map(|(a, b)| *a * *b).sum();
-    let norm_a = slice_a.iter().map(|a| *a * *a).sum::<T>().sqrt();
-    let norm_b = slice_b.iter().map(|b| *b * *b).sum::<T>().sqrt();
+
+    let norm_a = (f64::from(norm_a_squared)).sqrt();
+    let norm_b = (f64::from(norm_b_squared)).sqrt();
     let norm_product = norm_a * norm_b;
-    if norm_product == <T as std::convert::From<f64>>::from(0.0) {
+    if norm_product == 0.0 {
         None
     } else {
-        Some(dot_product / norm_product)
+        Some(f64::from(dot_product) / norm_product)
     }
 }
 
@@ -59,7 +64,7 @@ T: std::ops::Mul<Output = T>
 /// let distance = cosine_distance(&slice_a, &slice_b).unwrap();
 /// assert_eq!(distance.round(), 0.0);
 /// ```
-pub fn cosine_distance(slice_a: &[f64], slice_b: &[f64]) -> Option<f64> {
+pub fn cosine_distance<T>(slice_a: &[T], slice_b: &[T]) -> Option<f64> where T: Copy + Num, f64: From<T> {
     if slice_a.len() != slice_b.len() {
         None
     } else {
@@ -206,4 +211,16 @@ pub fn overshoot_rate<T>(actual: &[T], predicted: &[T], tolerance: T) -> Option<
 pub trait Sqrt {
     type Output;
     fn sqrt(self) -> Self::Output;
+}
+
+fn jaccard_index<T: Eq + std::hash::Hash>(set1: &HashSet<T>, set2: &HashSet<T>) -> f64 {
+    let intersection = set1.intersection(set2).count();
+    let union: usize = set1.union(set2).count();
+
+    if union == 0 {
+        // Handle potential division by zero if both sets are empty
+        return 0.0; 
+    }
+
+    intersection as f64 / union as f64
 }
