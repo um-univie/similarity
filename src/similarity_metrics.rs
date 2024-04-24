@@ -1,9 +1,12 @@
 use num_traits::sign::abs;
-use num_traits::{real::Real, Num, Float};
+use num_traits::{Num, Float};
 use std::collections::HashSet;
 
 /// This function calculates the cosine similarity between two slices. 
 /// Geometrically, this is the cosine of the angle between two vectors.
+/// An Option is returned that contains the cosine similarity if the slices are the same length and
+/// the norm of the product of the slices is not zero. The return type is f64 as the cosine similarity
+/// might be fractional even for integer slices.
 ///
 /// # Arguments
 /// * `slice_a` - A slice of values
@@ -218,7 +221,7 @@ fn jaccard_index<T: Eq + std::hash::Hash>(set1: &HashSet<T>, set2: &HashSet<T>) 
     let union: usize = set1.union(set2).count();
 
     if union == 0 {
-        // Handle potential division by zero if both sets are empty
+        // Handle potential division by zero if both sets or the union are empty
         return 0.0; 
     }
 
