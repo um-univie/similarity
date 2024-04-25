@@ -94,14 +94,9 @@ pub fn euclidean_distance<T>(slice_a: &[T], slice_b: &[T]) -> Option<T>
 where
     T: std::ops::Mul<Output = T> + std::ops::Add<Output = T> + Float + Copy + std::iter::Sum<T>,
 {
-    if slice_a.len() != slice_b.len() {
-        None
-    } else {
-        let sum_of_squares = squared_euclidean_distance(slice_a, slice_b);
-
-        // This unwrap is safe because we know that the slices are the same length
-        Some(sum_of_squares.unwrap().sqrt())
-    }
+    let sum_of_squares = squared_euclidean_distance(slice_a, slice_b)?;
+    // This unwrap is safe because we know that the slices are the same length
+    Some(sum_of_squares.sqrt())
 }
 
 /// This function calculates the squared euclidean distance between two slices.
