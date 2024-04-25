@@ -36,16 +36,16 @@ where
     let mut norm_a_squared = T::zero();
     let mut norm_b_squared = T::zero();
 
-    for (a, b) in slice_a.iter().zip(slice_b.iter()) {
-        let product = *a * *b;
+    for (a, b) in slice_a.iter().copied().zip(slice_b.iter().copied()) {
+        let product = a * b;
         dot_product = dot_product + product;
-        norm_a_squared = norm_a_squared + *a * *a;
-        norm_b_squared = norm_b_squared + *b * *b;
+        norm_a_squared = norm_a_squared + a * a;
+        norm_b_squared = norm_b_squared + b * b;
     }
 
-    let norm_a = (f64::from(norm_a_squared)).sqrt();
-    let norm_b = (f64::from(norm_b_squared)).sqrt();
-    let norm_product = norm_a * norm_b;
+    let norm_a = f64::from(norm_a_squared);
+    let norm_b = f64::from(norm_b_squared);
+    let norm_product = (norm_a * norm_b).sqrt();
     if norm_product == 0.0 {
         None
     } else {
@@ -68,12 +68,8 @@ where
 /// assert_eq!(distance.round(), 0.0);
 /// ```
 pub fn cosine_distance<T>(slice_a: &[T], slice_b: &[T]) -> Option<f64> where T: Copy + Num, f64: From<T> {
-    if slice_a.len() != slice_b.len() {
-        None
-    } else {
-        let cosine_similarity = cosine_similarity(slice_a, slice_b)?;
-        Some(1.0 - cosine_similarity)
-    }
+    let cosine_similarity = cosine_similarity(slice_a, slice_b)?;
+    Some(1.0 - cosine_similarity)
 }
 
 /// This function calculates the euclidean distance between two slices.
