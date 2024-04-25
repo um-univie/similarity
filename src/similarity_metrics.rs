@@ -95,7 +95,6 @@ where
     T: std::ops::Mul<Output = T> + std::ops::Add<Output = T> + Float + Copy + std::iter::Sum<T>,
 {
     let sum_of_squares = squared_euclidean_distance(slice_a, slice_b)?;
-    // This unwrap is safe because we know that the slices are the same length
     Some(sum_of_squares.sqrt())
 }
 
