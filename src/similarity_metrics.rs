@@ -1,4 +1,5 @@
 use num_traits::sign::abs;
+use std::ops::{Add, Sub, Mul};
 use num_traits::{Num, Float};
 use std::collections::HashSet;
 
@@ -183,10 +184,10 @@ where
 /// # Example
 /// ```
 /// use crate::similarity::similarity_metrics::*;
-/// let actual = [0, 0, 0, 0, 1, 0, 0];
-/// let predicted = [0, 0, 0, 0, 0, 0, 0];
-/// let overshoot_rate = overshoot_rate(&actual, &predicted, 1).unwrap();
-/// assert_eq!(overshoot_rate, 0.0);
+/// let actual = [1, 1, 1, 0, 0, 0];
+/// let predicted = [1, 1, 1, 1, 1, 1];
+/// let overshoot_rate = overshoot_rate(&actual, &predicted, 0).unwrap();
+/// assert_eq!(overshoot_rate, 0.5);
 /// ```
 pub fn overshoot_rate<T>(actual: &[T], predicted: &[T], tolerance: T) -> Option<f64> where T: std::ops::Sub<Output = T> + Copy + std::cmp::PartialOrd + num_traits::Signed {
     if actual.len() != predicted.len() {
@@ -195,7 +196,7 @@ pub fn overshoot_rate<T>(actual: &[T], predicted: &[T], tolerance: T) -> Option<
         let overshoots: usize = actual
             .iter()
             .zip(predicted.iter())
-            .filter(|&(a, p)| *a > *p + tolerance)
+            .filter(|&(a, p)| *p > *a + tolerance)
             .count();
         Some(overshoots as f64 / actual.len() as f64)
     }
@@ -209,11 +210,9 @@ pub trait Sqrt {
 fn jaccard_index<T: Eq + std::hash::Hash>(set1: &HashSet<T>, set2: &HashSet<T>) -> f64 {
     let intersection = set1.intersection(set2).count();
     let union: usize = set1.union(set2).count();
-
     if union == 0 {
         // Handle potential division by zero if both sets or the union are empty
         return 0.0; 
     }
-
     intersection as f64 / union as f64
 }
