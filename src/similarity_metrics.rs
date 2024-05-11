@@ -214,7 +214,7 @@ pub trait Sqrt {
     fn sqrt(self) -> Self::Output;
 }
 
-fn jaccard_index<T: Eq + std::hash::Hash>(set1: &HashSet<T>, set2: &HashSet<T>) -> f64 {
+pub fn jaccard_index<T: Eq + std::hash::Hash>(set1: &HashSet<T>, set2: &HashSet<T>) -> f64 {
     let intersection = set1.intersection(set2).count();
     let union: usize = set1.union(set2).count();
     if union == 0 {
@@ -223,3 +223,6 @@ fn jaccard_index<T: Eq + std::hash::Hash>(set1: &HashSet<T>, set2: &HashSet<T>) 
     }
     intersection as f64 / union as f64
 }
+
+
+
