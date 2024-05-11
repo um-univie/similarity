@@ -1,7 +1,6 @@
 use num_traits::sign::abs;
 use num_traits::{Float, Num};
 use std::collections::HashSet;
-use std::ops::{Add, Mul, Sub};
 
 /// This function calculates the cosine similarity between two slices.
 /// Geometrically, this is the cosine of the angle between two vectors.
