@@ -1,9 +1,9 @@
 use num_traits::sign::abs;
-use std::ops::{Add, Sub, Mul};
-use num_traits::{Num, Float};
+use num_traits::{Float, Num};
 use std::collections::HashSet;
+use std::ops::{Add, Mul, Sub};
 
-/// This function calculates the cosine similarity between two slices. 
+/// This function calculates the cosine similarity between two slices.
 /// Geometrically, this is the cosine of the angle between two vectors.
 /// An Option is returned that contains the cosine similarity if the slices are the same length and
 /// the norm of the product of the slices is not zero. The return type is f64 as the cosine similarity
@@ -27,7 +27,8 @@ use std::collections::HashSet;
 /// ```
 pub fn cosine_similarity<T>(slice_a: &[T], slice_b: &[T]) -> Option<f64>
 where
-    T: Copy + Num, f64: From<T>,
+    T: Copy + Num,
+    f64: From<T>,
 {
     if slice_a.len() != slice_b.len() {
         return None;
@@ -37,16 +38,16 @@ where
     let mut norm_a_squared = T::zero();
     let mut norm_b_squared = T::zero();
 
-    for (a, b) in slice_a.iter().copied().zip(slice_b.iter().copied()) {
-        let product = a * b;
-        dot_product = dot_product + product;
-        norm_a_squared = norm_a_squared + a * a;
-        norm_b_squared = norm_b_squared + b * b;
+    for (value_a, value_b) in slice_a.iter().copied().zip(slice_b.iter().copied()) {
+        dot_product = dot_product + value_a * value_b;
+        norm_a_squared = norm_a_squared + value_a * value_a;
+        norm_b_squared = norm_b_squared + value_b * value_b;
     }
 
     let norm_a = f64::from(norm_a_squared);
     let norm_b = f64::from(norm_b_squared);
     let norm_product = (norm_a * norm_b).sqrt();
+
     if norm_product == 0.0 {
         None
     } else {
@@ -68,7 +69,11 @@ where
 /// let distance = cosine_distance(&slice_a, &slice_b).unwrap();
 /// assert_eq!(distance.round(), 0.0);
 /// ```
-pub fn cosine_distance<T>(slice_a: &[T], slice_b: &[T]) -> Option<f64> where T: Copy + Num, f64: From<T> {
+pub fn cosine_distance<T>(slice_a: &[T], slice_b: &[T]) -> Option<f64>
+where
+    T: Copy + Num,
+    f64: From<T>,
+{
     let cosine_similarity = cosine_similarity(slice_a, slice_b)?;
     Some(1.0 - cosine_similarity)
 }
@@ -119,7 +124,7 @@ where
 /// ```
 pub fn squared_euclidean_distance<T>(slice_a: &[T], slice_b: &[T]) -> Option<T>
 where
-    T: std::ops::Mul<Output = T> + std::ops::Sub<Output=T> + Copy + std::iter::Sum<T>,
+    T: std::ops::Mul<Output = T> + std::ops::Sub<Output = T> + Copy + std::iter::Sum<T>,
 {
     if slice_a.len() != slice_b.len() {
         None
@@ -189,7 +194,10 @@ where
 /// let overshoot_rate = overshoot_rate(&actual, &predicted, 0).unwrap();
 /// assert_eq!(overshoot_rate, 0.5);
 /// ```
-pub fn overshoot_rate<T>(actual: &[T], predicted: &[T], tolerance: T) -> Option<f64> where T: std::ops::Sub<Output = T> + Copy + std::cmp::PartialOrd + num_traits::Signed {
+pub fn overshoot_rate<T>(actual: &[T], predicted: &[T], tolerance: T) -> Option<f64>
+where
+    T: std::ops::Sub<Output = T> + Copy + std::cmp::PartialOrd + num_traits::Signed,
+{
     if actual.len() != predicted.len() {
         None
     } else {
@@ -212,7 +220,7 @@ fn jaccard_index<T: Eq + std::hash::Hash>(set1: &HashSet<T>, set2: &HashSet<T>) 
     let union: usize = set1.union(set2).count();
     if union == 0 {
         // Handle potential division by zero if both sets or the union are empty
-        return 0.0; 
+        return 0.0;
     }
     intersection as f64 / union as f64
 }
