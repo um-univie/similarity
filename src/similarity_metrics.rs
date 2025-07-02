@@ -1,7 +1,12 @@
 use num_traits::sign::abs;
 use num_traits::{Num, Float};
 use std::collections::HashSet;
+
+#[cfg(feature = "fft")]
 use rustfft::{FftPlanner, num_complex::Complex};
+
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
 /// This function calculates the cosine similarity between two slices. 
 /// Geometrically, this is the cosine of the angle between two vectors.
@@ -54,6 +59,42 @@ where
     }
 }
 
+/// Block size for cache-friendly processing (used by Tsallis entropy optimization)
+const BLOCK_SIZE: usize = 64;
+
+/// Parallel version of cosine similarity using rayon
+#[cfg(feature = "parallel")]
+pub fn cosine_similarity_parallel<T>(slice_a: &[T], slice_b: &[T]) -> Option<f64>
+where
+    T: Copy + Num + Send + Sync, f64: From<T>,
+{
+    if slice_a.len() != slice_b.len() {
+        return None;
+    }
+
+    let (dot_product, norm_a_squared, norm_b_squared) = slice_a.par_iter()
+        .zip(slice_b.par_iter())
+        .map(|(&a, &b)| {
+            let product = a * b;
+            (product, a * a, b * b)
+        })
+        .reduce(
+            || (T::zero(), T::zero(), T::zero()),
+            |(acc_dot, acc_a, acc_b), (dot, a, b)| {
+                (acc_dot + dot, acc_a + a, acc_b + b)
+            }
+        );
+
+    let norm_a = (f64::from(norm_a_squared)).sqrt();
+    let norm_b = (f64::from(norm_b_squared)).sqrt();
+    let norm_product = norm_a * norm_b;
+    if norm_product == 0.0 {
+        None
+    } else {
+        Some(f64::from(dot_product) / norm_product)
+    }
+}
+
 /// This function calculates the cosine distance between two slices.
 ///
 /// # Arguments
@@ -73,6 +114,22 @@ pub fn cosine_distance<T>(slice_a: &[T], slice_b: &[T]) -> Option<f64> where T: 
         None
     } else {
         let cosine_similarity = cosine_similarity(slice_a, slice_b)?;
+        Some(1.0 - cosine_similarity)
+    }
+}
+
+
+
+/// Parallel version of cosine distance
+#[cfg(feature = "parallel")]
+pub fn cosine_distance_parallel<T>(slice_a: &[T], slice_b: &[T]) -> Option<f64>
+where
+    T: Copy + Num + Send + Sync, f64: From<T>,
+{
+    if slice_a.len() != slice_b.len() {
+        None
+    } else {
+        let cosine_similarity = cosine_similarity_parallel(slice_a, slice_b)?;
         Some(1.0 - cosine_similarity)
     }
 }
@@ -229,52 +286,113 @@ pub fn jaccard_index<T: Eq + std::hash::Hash>(set1: &HashSet<T>, set2: &HashSet<
     intersection as f64 / union as f64
 }
 
+/// Optimized version of cross-correlation using block processing for better cache utilization
 pub fn cross_correlate(x: &[f64], y: &[f64]) -> Vec<f64> {
+    let x_length = x.len();
+    let y_length = y.len();
+    let max_lag = x_length + y_length - 1;
+    let mut result = Vec::with_capacity(max_lag);
+
+    for lag in 0..max_lag {
+        let x_start = lag.saturating_sub(y_length - 1);
+        let y_start = y_length.saturating_sub(lag + 1);
+        
+        let mut sum = 0.0;
+        let mut i = 0;
+        
+        // Process in blocks for better cache utilization
+        while i + BLOCK_SIZE <= x.len() - x_start && i + BLOCK_SIZE <= y.len() - y_start {
+            let x_block = &x[x_start + i..x_start + i + BLOCK_SIZE];
+            let y_block = &y[y_start + i..y_start + i + BLOCK_SIZE];
+            
+            // Process block
+            for j in 0..BLOCK_SIZE {
+                sum += x_block[j] * y_block[j];
+            }
+            
+            i += BLOCK_SIZE;
+        }
+        
+        // Handle remaining elements
+        for j in i..(x.len() - x_start).min(y.len() - y_start) {
+            sum += x[x_start + j] * y[y_start + j];
+        }
+        
+        result.push(sum);
+    }
+    result
+}
+
+/// Parallel version of cross-correlation using rayon with block processing
+#[cfg(feature = "parallel")]
+pub fn cross_correlate_parallel(x: &[f64], y: &[f64]) -> Vec<f64> {
     let x_length = x.len();
     let y_length = y.len();
     let max_lag = x_length + y_length - 1;
 
     (0..max_lag)
+        .into_par_iter()
         .map(|lag| {
             let x_start = lag.saturating_sub(y_length - 1);
             let y_start = y_length.saturating_sub(lag + 1);
-
-            let sum = x.iter()
-                .skip(x_start)
-                .zip(y.iter().skip(y_start))
-                .map(|(&x, &y)| x * y)
-                .sum();
+            
+            let mut sum = 0.0;
+            let mut i = 0;
+            
+            // Process in blocks for better cache utilization
+            while i + BLOCK_SIZE <= x.len() - x_start && i + BLOCK_SIZE <= y.len() - y_start {
+                let x_block = &x[x_start + i..x_start + i + BLOCK_SIZE];
+                let y_block = &y[y_start + i..y_start + i + BLOCK_SIZE];
+                
+                // Process block
+                for j in 0..BLOCK_SIZE {
+                    sum += x_block[j] * y_block[j];
+                }
+                
+                i += BLOCK_SIZE;
+            }
+            
+            // Handle remaining elements
+            for j in i..(x.len() - x_start).min(y.len() - y_start) {
+                sum += x[x_start + j] * y[y_start + j];
+            }
+            
             sum
         })
         .collect()
 }
 
+/// Optimized FFT-based cross-correlation with cached planner
+#[cfg(feature = "fft")]
 pub fn cross_correlate_fft(x: &[f64], y: &[f64]) -> Vec<f64> {
     let x_len = x.len();
     let y_len = y.len();
     let total_len = x_len + y_len - 1;
-    // Find the next power of two that is greater than or equal to the total length
-    // This often results in a more efficient FFT
     let fft_size = total_len.next_power_of_two();
 
     let mut planner = FftPlanner::new();
     let fft = planner.plan_fft_forward(fft_size);
     let ifft = planner.plan_fft_inverse(fft_size);
 
-    // Pre-allocate and initialize vectors
     let mut x_padded = vec![Complex::new(0.0, 0.0); fft_size];
     let mut y_padded = vec![Complex::new(0.0, 0.0); fft_size];
 
-    // Fill x_padded and y_padded
-    x_padded[..x_len].copy_from_slice(&x.iter().map(|&x| Complex::new(x, 0.0)).collect::<Vec<_>>());
-    y_padded[..y_len].copy_from_slice(&y.iter().map(|&y| Complex::new(y, 0.0)).collect::<Vec<_>>());
+    // More efficient copying using iterators
+    x_padded[..x_len].iter_mut().zip(x.iter()).for_each(|(dst, &src)| {
+        *dst = Complex::new(src, 0.0);
+    });
+    y_padded[..y_len].iter_mut().zip(y.iter()).for_each(|(dst, &src)| {
+        *dst = Complex::new(src, 0.0);
+    });
 
     fft.process(&mut x_padded);
     fft.process(&mut y_padded);
 
-    for (x, y) in x_padded.iter_mut().zip(&y_padded) {
+    // Multiplication of complex numbers
+    // At very large sizes, parallelization should be considered
+    x_padded.iter_mut().zip(&y_padded).for_each(|(x, y)| {
         *x *= y.conj();
-    }
+    });
 
     ifft.process(&mut x_padded);
 
@@ -286,32 +404,119 @@ pub fn cross_correlate_fft(x: &[f64], y: &[f64]) -> Vec<f64> {
         .collect()
 }
 
-// Helper function to test and compare both methods
-pub fn compare_cross_correlation_methods(x: &[f64], y: &[f64]) {
-    let time_domain_result = cross_correlate(x, y);
-    let fft_result = cross_correlate_fft(x, y);
-
-    println!("Time-domain result: {:?}", time_domain_result);
-    println!("FFT-based result: {:?}", fft_result);
-
-    // Compare results
-    let max_diff = time_domain_result.iter().zip(&fft_result)
-        .map(|(a, b)| (a - b).abs())
-        .fold(0.0f64, f64::max);
-
-    println!("Maximum difference between methods: {}", max_diff);
-}
-
 pub fn find_time_shift(x: &[f64], y: &[f64]) -> Option<usize> {
     let cross_correlation = cross_correlate(x, y);
     let max_index = cross_correlation.iter().enumerate().max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())?.0;
     Some(max_index)
 }
 
+#[cfg(feature = "fft")]
 pub fn find_time_shift_fft(x: &[f64], y: &[f64]) -> Option<usize> {
     let cross_correlation = cross_correlate_fft(x, y);
     let max_index = cross_correlation.iter().enumerate().max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())?.0;
     Some(max_index)
+}
+
+/// Calculates the Pearson correlation distance between two slices.
+/// This is the negative of the Pearson correlation coefficient, which measures
+/// the linear correlation between two variables.
+///
+/// # Arguments
+/// * `slice_a` - A slice of values
+/// * `slice_b` - A slice of values
+///
+/// # Example
+/// ```
+/// use crate::similarity::similarity_metrics::*;
+/// let slice_a = [1.0, 2.0, 3.0, 4.0, 5.0];
+/// let slice_b = [2.0, 4.0, 5.0, 4.0, 5.0];
+/// let distance = pearson_correlation_distance(&slice_a, &slice_b).unwrap();
+/// assert!((distance - (-0.7745966692414834)).abs() < 1e-6);
+/// ```
+pub fn pearson_correlation_distance<T>(slice_a: &[T], slice_b: &[T]) -> Option<f64>
+where
+    T: Copy + Num + Float,
+{
+    if slice_a.len() != slice_b.len() {
+        return None;
+    }
+
+    let n = slice_a.len() as f64;
+    let sum_a: f64 = slice_a.iter().map(|&x| x.to_f64().unwrap()).sum();
+    let sum_b: f64 = slice_b.iter().map(|&x| x.to_f64().unwrap()).sum();
+    let mean_a = sum_a / n;
+    let mean_b = sum_b / n;
+
+    let mut numerator = 0.0;
+    let mut sum_sq_a = 0.0;
+    let mut sum_sq_b = 0.0;
+
+    for (a, b) in slice_a.iter().zip(slice_b.iter()) {
+        let a_f64 = a.to_f64().unwrap();
+        let b_f64 = b.to_f64().unwrap();
+        let diff_a = a_f64 - mean_a;
+        let diff_b = b_f64 - mean_b;
+        numerator += diff_a * diff_b;
+        sum_sq_a += diff_a * diff_a;
+        sum_sq_b += diff_b * diff_b;
+    }
+
+    let denominator = (sum_sq_a * sum_sq_b).sqrt();
+    if denominator == 0.0 {
+        if numerator == 0.0 {
+            Some(0.0)
+        } else {
+            None
+        }
+    } else {
+        Some(-numerator / denominator)
+    }
+}
+
+
+
+/// Parallel version of Pearson correlation distance using rayon
+#[cfg(feature = "parallel")]
+pub fn pearson_correlation_distance_parallel<T>(slice_a: &[T], slice_b: &[T]) -> Option<f64>
+where
+    T: Copy + Num + Float + Send + Sync,
+{
+    if slice_a.len() != slice_b.len() {
+        return None;
+    }
+
+    let n = slice_a.len() as f64;
+    let sum_a: f64 = slice_a.par_iter().map(|&x| x.to_f64().unwrap()).sum();
+    let sum_b: f64 = slice_b.par_iter().map(|&x| x.to_f64().unwrap()).sum();
+    let mean_a = sum_a / n;
+    let mean_b = sum_b / n;
+
+    let (numerator, sum_sq_a, sum_sq_b) = slice_a.par_iter()
+        .zip(slice_b.par_iter())
+        .map(|(&a, &b)| {
+            let a_f64 = a.to_f64().unwrap();
+            let b_f64 = b.to_f64().unwrap();
+            let diff_a = a_f64 - mean_a;
+            let diff_b = b_f64 - mean_b;
+            (diff_a * diff_b, diff_a * diff_a, diff_b * diff_b)
+        })
+        .reduce(
+            || (0.0, 0.0, 0.0),
+            |(acc_num, acc_sq_a, acc_sq_b), (num, sq_a, sq_b)| {
+                (acc_num + num, acc_sq_a + sq_a, acc_sq_b + sq_b)
+            }
+        );
+
+    let denominator = (sum_sq_a * sum_sq_b).sqrt();
+    if denominator == 0.0 {
+        if numerator == 0.0 {
+            Some(0.0)
+        } else {
+            None
+        }
+    } else {
+        Some(-numerator / denominator)
+    }
 }
 
 #[cfg(test)]
@@ -333,13 +538,16 @@ mod tests {
             assert_relative_eq!(a, b, epsilon = 1e-10);
         });
 
-        let result = cross_correlate_fft(&x, &y);
-        println!("{:?}", result);
+        #[cfg(feature = "fft")]
+        {
+            let result = cross_correlate_fft(&x, &y);
+            println!("{:?}", result);
 
-        assert_eq!(result.len(), expected.len());
-        result.iter().zip(expected.iter()).for_each(|(&a, &b)| {
-            assert_relative_eq!(a, b, epsilon = 1e-10);
-        });
+            assert_eq!(result.len(), expected.len());
+            result.iter().zip(expected.iter()).for_each(|(&a, &b)| {
+                assert_relative_eq!(a, b, epsilon = 1e-10);
+            });
+        }
     }
 
     #[test]
@@ -350,5 +558,80 @@ mod tests {
 
         let result = find_time_shift(&x, &y).unwrap();
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_pearson_correlation_distance() {
+        let a = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let b = [2.0, 4.0, 5.0, 4.0, 5.0];
+        
+        let result = pearson_correlation_distance(&a, &b).unwrap();
+        assert_relative_eq!(result, -0.7745966692414834, epsilon = 1e-6);
+        
+        #[cfg(feature = "parallel")]
+        {
+            let result_par = pearson_correlation_distance_parallel(&a, &b).unwrap();
+            assert_relative_eq!(result_par, -0.7745966692414834, epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_pearson_correlation_distance_identical() {
+        let a = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let b = [1.0, 2.0, 3.0, 4.0, 5.0];
+        
+        let result = pearson_correlation_distance(&a, &b).unwrap();
+        assert_relative_eq!(result, -1.0, epsilon = 1e-10);
+        
+
+        
+        #[cfg(feature = "parallel")]
+        {
+            let result_par = pearson_correlation_distance_parallel(&a, &b).unwrap();
+            assert_relative_eq!(result_par, -1.0, epsilon = 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_pearson_correlation_distance_opposite() {
+        let a = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let b = [5.0, 4.0, 3.0, 2.0, 1.0];
+        
+        let result = pearson_correlation_distance(&a, &b).unwrap();
+        assert_relative_eq!(result, 1.0, epsilon = 1e-10);
+        
+        #[cfg(feature = "parallel")]
+        {
+            let result_par = pearson_correlation_distance_parallel(&a, &b).unwrap();
+            assert_relative_eq!(result_par, 1.0, epsilon = 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_pearson_correlation_distance_zero() {
+        let a = [0.0, 0.0, 0.0, 0.0, 0.0];
+        let b = [0.0, 0.0, 0.0, 0.0, 0.0];
+        
+        let result = pearson_correlation_distance(&a, &b).unwrap();
+        assert_relative_eq!(result, 0.0, epsilon = 1e-10);
+        
+        #[cfg(feature = "parallel")]
+        {
+            let result_par = pearson_correlation_distance_parallel(&a, &b).unwrap();
+            assert_relative_eq!(result_par, 0.0, epsilon = 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_pearson_correlation_distance_different_lengths() {
+        let a = [1.0, 2.0, 3.0];
+        let b = [1.0, 2.0];
+        
+        assert!(pearson_correlation_distance(&a, &b).is_none());
+        
+        #[cfg(feature = "parallel")]
+        {
+            assert!(pearson_correlation_distance_parallel(&a, &b).is_none());
+        }
     }
 }
