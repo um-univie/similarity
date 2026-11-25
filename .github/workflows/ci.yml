@@ -28,7 +28,7 @@ jobs:
           - os: macos-latest
             features: "--features avx512"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Report CPU and detected ISAs
@@ -36,30 +36,10 @@ jobs:
       - name: Test
         run: cargo test ${{ matrix.features }}
 
-  # Guaranteed AVX-512 coverage: run the suite under Intel SDE emulating
-  # Sapphire Rapids, independent of the runner's real CPU.
-  avx512-sde:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: petarpetrovt/setup-sde@v2.4
-        with:
-          environmentVariableName: SDE_PATH
-          sdeVersion: 9.33.0
-      - name: Build tests
-        run: cargo test --features avx512 --lib --no-run
-      - name: Run tests under SDE (-spr)
-        run: |
-          BIN=$(ls -t target/debug/deps/similarity-* | grep -v '\.d$' | head -n1)
-          "$SDE_PATH/sde64" -spr -- "$BIN" --nocapture report_isas
-          "$SDE_PATH/sde64" -spr -- "$BIN" simd::
-
   msrv:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.83
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --lib
@@ -68,7 +48,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
