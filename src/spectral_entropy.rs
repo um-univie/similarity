@@ -21,6 +21,12 @@ pub struct Spectrum<T: Float> {
     pub peaks: Vec<Peak<T>>,
 }
 
+impl<T: Float + std::iter::Sum<T> + FromPrimitive + ToPrimitive> Default for Spectrum<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: Float + std::iter::Sum<T> + FromPrimitive + ToPrimitive> Spectrum<T> {
     /// Creates a new empty spectrum
     pub fn new() -> Self {
@@ -46,6 +52,94 @@ impl<T: Float + std::iter::Sum<T> + FromPrimitive + ToPrimitive> Spectrum<T> {
         Some(Self { peaks })
     }
 
+    /// Number of peaks.
+    pub fn len(&self) -> usize {
+        self.peaks.len()
+    }
+
+    /// `true` if the spectrum has no peaks.
+    pub fn is_empty(&self) -> bool {
+        self.peaks.is_empty()
+    }
+
+    /// m/z values of all peaks.
+    pub fn mzs(&self) -> Vec<T> {
+        self.peaks.iter().map(|p| p.mz).collect()
+    }
+
+    /// Intensities of all peaks.
+    pub fn intensities(&self) -> Vec<T> {
+        self.peaks.iter().map(|p| p.intensity).collect()
+    }
+
+    /// Sorts peaks by ascending m/z (NaN m/z values go last).
+    pub fn sort_by_mz(&mut self) {
+        self.peaks.sort_by(|a, b| {
+            a.mz.partial_cmp(&b.mz)
+                .unwrap_or_else(|| a.mz.is_nan().cmp(&b.mz.is_nan()))
+        });
+    }
+
+    /// Sum of all intensities.
+    pub fn total_intensity(&self) -> T {
+        self.peaks.iter().map(|p| p.intensity).sum()
+    }
+
+    /// The most intense peak, if any.
+    pub fn base_peak(&self) -> Option<Peak<T>> {
+        self.peaks
+            .iter()
+            .copied()
+            .fold(None, |best: Option<Peak<T>>, p| match best {
+                Some(b) if b.intensity >= p.intensity => Some(b),
+                _ => Some(p),
+            })
+    }
+
+    /// Scales intensities so the base peak has intensity 1.
+    pub fn normalize_to_max(&mut self) {
+        if let Some(bp) = self.base_peak() {
+            if bp.intensity > T::zero() {
+                for p in &mut self.peaks {
+                    p.intensity = p.intensity / bp.intensity;
+                }
+            }
+        }
+    }
+
+    /// Keeps only the `n` most intense peaks (order by m/z is preserved).
+    pub fn keep_top_n(&mut self, n: usize) {
+        if self.peaks.len() <= n {
+            return;
+        }
+        let mut idx: Vec<usize> = (0..self.peaks.len()).collect();
+        idx.sort_by(|&i, &j| {
+            self.peaks[j]
+                .intensity
+                .partial_cmp(&self.peaks[i].intensity)
+                .unwrap_or(core::cmp::Ordering::Equal)
+        });
+        let mut keep = vec![false; self.peaks.len()];
+        for &i in &idx[..n] {
+            keep[i] = true;
+        }
+        let mut k = keep.into_iter();
+        self.peaks.retain(|_| k.next().unwrap_or(false));
+    }
+
+    /// Keeps only peaks with `lo <= mz <= hi`.
+    pub fn filter_mz_range(&mut self, lo: T, hi: T) {
+        self.peaks.retain(|p| p.mz >= lo && p.mz <= hi);
+    }
+
+    /// Removes peaks whose intensity is below `fraction` of the base peak.
+    pub fn remove_relative_noise(&mut self, fraction: T) {
+        if let Some(bp) = self.base_peak() {
+            let threshold = bp.intensity * fraction;
+            self.peaks.retain(|p| p.intensity >= threshold);
+        }
+    }
+
     /// Normalizes the spectrum by dividing all intensities by the sum
     pub fn normalize(&mut self) {
         let sum: T = self.peaks.iter().map(|p| p.intensity).sum();
@@ -68,7 +162,7 @@ impl<T: Float + std::iter::Sum<T> + FromPrimitive + ToPrimitive> Spectrum<T> {
         }
 
         // Sort peaks by m/z
-        self.peaks.sort_by(|a, b| a.mz.partial_cmp(&b.mz).unwrap());
+        self.sort_by_mz();
 
         let mut new_peaks = Vec::new();
         let mut current_peak = self.peaks[0];
@@ -268,6 +362,203 @@ pub fn calculate_tsallis_entropy_optimized<T: Float + std::iter::Sum<T> + Send +
 }
 
 
+// ============================================================================
+// m/z-tolerant peak matching and matched spectral similarities
+// ============================================================================
+
+/// Tolerance used to decide whether two peaks have the same m/z.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MzTolerance<T> {
+    /// Absolute tolerance in Da (Th).
+    Absolute(T),
+    /// Relative tolerance in parts per million of the larger m/z.
+    Ppm(T),
+}
+
+impl<T: Float> MzTolerance<T> {
+    #[inline]
+    fn matches(self, a: T, b: T) -> bool {
+        let d = (a - b).abs();
+        match self {
+            MzTolerance::Absolute(t) => d <= t,
+            MzTolerance::Ppm(ppm) => d <= a.abs().max(b.abs()) * ppm * T::from(1e-6).unwrap(),
+        }
+    }
+
+    /// Upper bound of the absolute tolerance window around `mz`.
+    #[inline]
+    fn window(self, mz: T) -> T {
+        match self {
+            MzTolerance::Absolute(t) => t,
+            // the larger m/z of a matching pair is at most mz·(1+ε)/(1−ε); use a safe bound
+            MzTolerance::Ppm(ppm) => {
+                let e = ppm * T::from(1e-6).unwrap();
+                mz.abs() * e / (T::one() - e).max(T::epsilon())
+            }
+        }
+    }
+}
+
+fn sorted_indices<T: Float>(s: &Spectrum<T>) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..s.peaks.len()).collect();
+    idx.sort_by(|&i, &j| {
+        s.peaks[i]
+            .mz
+            .partial_cmp(&s.peaks[j].mz)
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+    idx
+}
+
+/// Greedy one-to-one peak matching within an m/z tolerance.
+///
+/// All candidate pairs within tolerance are scored with `score(i, j)` and
+/// assigned greedily from the highest score down, so every peak is matched
+/// at most once (the "greedy" strategy used by matchms' CosineGreedy).
+/// Returns pairs `(index_in_a, index_in_b)`. Inputs need not be sorted.
+pub fn match_peaks_by<T: Float, F: Fn(usize, usize) -> T>(
+    a: &Spectrum<T>,
+    b: &Spectrum<T>,
+    tolerance: MzTolerance<T>,
+    score: F,
+) -> Vec<(usize, usize)> {
+    let ib = sorted_indices(b);
+    let bmz: Vec<T> = ib.iter().map(|&j| b.peaks[j].mz).collect();
+    let mut cand: Vec<(T, usize, usize)> = Vec::new();
+    for (i, pa) in a.peaks.iter().enumerate() {
+        let w = tolerance.window(pa.mz);
+        let lo = bmz.partition_point(|&m| m < pa.mz - w);
+        for k in lo..bmz.len() {
+            if bmz[k] > pa.mz + w {
+                break;
+            }
+            let j = ib[k];
+            if tolerance.matches(pa.mz, b.peaks[j].mz) {
+                cand.push((score(i, j), i, j));
+            }
+        }
+    }
+    cand.sort_by(|x, y| {
+        y.0.partial_cmp(&x.0)
+            .unwrap_or(core::cmp::Ordering::Equal)
+            .then(x.1.cmp(&y.1))
+            .then(x.2.cmp(&y.2))
+    });
+    let mut used_a = vec![false; a.peaks.len()];
+    let mut used_b = vec![false; b.peaks.len()];
+    let mut out = Vec::new();
+    for (_, i, j) in cand {
+        if !used_a[i] && !used_b[j] {
+            used_a[i] = true;
+            used_b[j] = true;
+            out.push((i, j));
+        }
+    }
+    out
+}
+
+/// Greedy peak matching scored by intensity product (see [`match_peaks_by`]).
+///
+/// ```
+/// use similarity::{Spectrum, match_peaks, MzTolerance};
+/// let a = Spectrum::from_arrays(&[100.0, 200.0], &[1.0, 1.0]).unwrap();
+/// let b = Spectrum::from_arrays(&[100.004, 300.0], &[1.0, 1.0]).unwrap();
+/// assert_eq!(match_peaks(&a, &b, MzTolerance::Absolute(0.01)), vec![(0, 0)]);
+/// ```
+pub fn match_peaks<T: Float>(a: &Spectrum<T>, b: &Spectrum<T>, tolerance: MzTolerance<T>) -> Vec<(usize, usize)> {
+    match_peaks_by(a, b, tolerance, |i, j| a.peaks[i].intensity * b.peaks[j].intensity)
+}
+
+/// Modified spectral cosine score with greedy peak matching.
+///
+/// Peak weights are `mz^mz_power · intensity^intensity_power`
+/// (`(0, 1)` is the plain cosine; `(0, 0.5)` square-root scaling is
+/// common for library search). Returns `(score, matched_peaks)`; the score
+/// is `0` if either spectrum has no positive weight.
+///
+/// ```
+/// use similarity::{Spectrum, spectral_cosine_similarity, MzTolerance};
+/// let a = Spectrum::from_arrays(&[100.0, 150.0, 200.0], &[10.0, 5.0, 1.0]).unwrap();
+/// let b = Spectrum::from_arrays(&[100.002, 150.001, 250.0], &[10.0, 5.0, 1.0]).unwrap();
+/// let (score, n) = spectral_cosine_similarity(&a, &b, MzTolerance::Absolute(0.01), 0.0, 1.0);
+/// assert_eq!(n, 2);
+/// assert!(score > 0.98 && score < 1.0);
+/// ```
+pub fn spectral_cosine_similarity<T: Float>(
+    a: &Spectrum<T>,
+    b: &Spectrum<T>,
+    tolerance: MzTolerance<T>,
+    mz_power: T,
+    intensity_power: T,
+) -> (T, usize) {
+    let weight = |p: &Peak<T>| {
+        let i = if intensity_power == T::one() { p.intensity } else { p.intensity.max(T::zero()).powf(intensity_power) };
+        if mz_power == T::zero() { i } else { i * p.mz.powf(mz_power) }
+    };
+    let wa: Vec<T> = a.peaks.iter().map(weight).collect();
+    let wb: Vec<T> = b.peaks.iter().map(weight).collect();
+    let na = wa.iter().fold(T::zero(), |s, &x| s + x * x).sqrt();
+    let nb = wb.iter().fold(T::zero(), |s, &x| s + x * x).sqrt();
+    if na == T::zero() || nb == T::zero() {
+        return (T::zero(), 0);
+    }
+    let pairs = match_peaks_by(a, b, tolerance, |i, j| wa[i] * wb[j]);
+    let dot = pairs.iter().fold(T::zero(), |s, &(i, j)| s + wa[i] * wb[j]);
+    ((dot / (na * nb)).min(T::one()), pairs.len())
+}
+
+/// Spectral entropy similarity with m/z-tolerant peak matching.
+///
+/// Unlike [`calculate_entropy_similarity`], which pairs peaks by position,
+/// this version first applies the entropy-based intensity weighting to each
+/// spectrum, then matches peaks within `tolerance` (greedy, by weighted
+/// intensity product) and merges matched peaks. Unmatched peaks keep their
+/// own intensity. Returns a score in `[0, 1]`; `0` if either spectrum has
+/// zero total intensity.
+///
+/// Reference: Li et al., *Nature Methods* 18, 1524–1531 (2021).
+///
+/// ```
+/// use similarity::{Spectrum, calculate_entropy_similarity_matched, MzTolerance};
+/// let a = Spectrum::from_arrays(&[100.0, 200.0], &[1.0, 1.0]).unwrap();
+/// let b = Spectrum::from_arrays(&[200.0, 100.0], &[1.0, 1.0]).unwrap();
+/// let s = calculate_entropy_similarity_matched(&a, &b, MzTolerance::Absolute(0.01));
+/// assert!((s - 1.0_f64).abs() < 1e-12);
+/// ```
+pub fn calculate_entropy_similarity_matched<T: Float + std::iter::Sum<T> + FromPrimitive + ToPrimitive>(
+    a: &Spectrum<T>,
+    b: &Spectrum<T>,
+    tolerance: MzTolerance<T>,
+) -> T {
+    if a.total_intensity() <= T::zero() || b.total_intensity() <= T::zero() {
+        return T::zero();
+    }
+    let (ea, wa) = a.get_entropy_and_weighted_intensity();
+    let (eb, wb) = b.get_entropy_and_weighted_intensity();
+    let sa: T = wa.iter().copied().sum();
+    let sb: T = wb.iter().copied().sum();
+    let wa: Vec<T> = wa.iter().map(|&x| x / sa).collect();
+    let wb: Vec<T> = wb.iter().map(|&x| x / sb).collect();
+
+    let pairs = match_peaks_by(a, b, tolerance, |i, j| wa[i] * wb[j]);
+    let mut matched_a = vec![false; wa.len()];
+    let mut matched_b = vec![false; wb.len()];
+    let mut merged: Vec<T> = Vec::with_capacity(wa.len() + wb.len());
+    for &(i, j) in &pairs {
+        matched_a[i] = true;
+        matched_b[j] = true;
+        merged.push(wa[i] + wb[j]);
+    }
+    merged.extend(wa.iter().zip(&matched_a).filter(|(_, &m)| !m).map(|(&x, _)| x));
+    merged.extend(wb.iter().zip(&matched_b).filter(|(_, &m)| !m).map(|(&x, _)| x));
+
+    let em = calculate_entropy_from_intensities(&merged);
+    let ln4 = T::from_f64(4.0).unwrap().ln();
+    let two = T::from_f64(2.0).unwrap();
+    let s = T::one() - (two * em - ea - eb) / ln4;
+    s.max(T::zero()).min(T::one())
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -432,6 +723,7 @@ mod tests {
         assert_relative_eq!(entropy, 0.0, epsilon = 1e-10);
     }
 
+    #[cfg(feature = "parallel")]
     #[test]
     fn test_optimized_tsallis_entropy() {
         let mzs = vec![100.0, 200.0, 300.0];
@@ -443,4 +735,74 @@ mod tests {
         
         assert_relative_eq!(entropy, entropy_opt, epsilon = 1e-10);
     }
-} 
+
+    #[test]
+    fn test_spectrum_helpers() {
+        let mut s = Spectrum::from_arrays(&[300.0, 100.0, 200.0, 150.0], &[5.0, 50.0, 1.0, 20.0]).unwrap();
+        assert_eq!(s.len(), 4);
+        assert_relative_eq!(s.total_intensity(), 76.0);
+        assert_relative_eq!(s.base_peak().unwrap().mz, 100.0);
+        s.sort_by_mz();
+        assert_eq!(s.mzs(), vec![100.0, 150.0, 200.0, 300.0]);
+        let mut t = s.clone();
+        t.keep_top_n(2);
+        assert_eq!(t.mzs(), vec![100.0, 150.0]);
+        let mut t = s.clone();
+        t.remove_relative_noise(0.1);
+        assert_eq!(t.mzs(), vec![100.0, 150.0, 300.0]);
+        let mut t = s.clone();
+        t.filter_mz_range(120.0, 250.0);
+        assert_eq!(t.mzs(), vec![150.0, 200.0]);
+        s.normalize_to_max();
+        assert_relative_eq!(s.base_peak().unwrap().intensity, 1.0);
+        assert!(Spectrum::<f64>::new().base_peak().is_none());
+    }
+
+    #[test]
+    fn test_match_peaks_greedy_and_ppm() {
+        // one peak in a sits between two in b; the stronger pair wins
+        let a = Spectrum::from_arrays(&[100.0, 100.02], &[1.0, 10.0]).unwrap();
+        let b = Spectrum::from_arrays(&[100.01], &[5.0]).unwrap();
+        assert_eq!(match_peaks(&a, &b, MzTolerance::Absolute(0.02)), vec![(1, 0)]);
+        // 10 ppm at m/z 1000 is 0.01 Da
+        let a = Spectrum::from_arrays(&[1000.0], &[1.0]).unwrap();
+        let b = Spectrum::from_arrays(&[1000.009], &[1.0]).unwrap();
+        let c = Spectrum::from_arrays(&[1000.02], &[1.0]).unwrap();
+        assert_eq!(match_peaks(&a, &b, MzTolerance::Ppm(10.0)).len(), 1);
+        assert_eq!(match_peaks(&a, &c, MzTolerance::Ppm(10.0)).len(), 0);
+    }
+
+    #[test]
+    fn test_spectral_cosine() {
+        let a = Spectrum::from_arrays(&[100.0, 200.0, 300.0], &[3.0, 4.0, 0.0]).unwrap();
+        let (s, n) = spectral_cosine_similarity(&a, &a, MzTolerance::Absolute(0.01), 0.0, 1.0);
+        assert_relative_eq!(s, 1.0, epsilon = 1e-12);
+        assert_eq!(n, 3);
+        let b = Spectrum::from_arrays(&[100.0, 250.0], &[3.0, 4.0]).unwrap();
+        let (s, n) = spectral_cosine_similarity(&a, &b, MzTolerance::Absolute(0.01), 0.0, 1.0);
+        assert_relative_eq!(s, 9.0 / 25.0, epsilon = 1e-12);
+        assert_eq!(n, 1);
+        let empty = Spectrum::<f64>::new();
+        assert_eq!(spectral_cosine_similarity(&a, &empty, MzTolerance::Absolute(0.01), 0.0, 1.0), (0.0, 0));
+    }
+
+    #[test]
+    fn test_entropy_similarity_matched() {
+        let a = Spectrum::from_arrays(
+            &[124.0869, 148.9238, 156.015, 186.0342, 279.0911, 300.0],
+            &[0.32267, 20.5, 0.222153, 40.0, 50.0, 10.0],
+        ).unwrap();
+        let b = Spectrum::from_arrays(
+            &[124.0869, 148.9238, 156.011, 279.0912, 289.0911],
+            &[0.32267, 20.5, 0.222153, 50.0, 50.0],
+        ).unwrap();
+        let s = calculate_entropy_similarity_matched(&a, &b, MzTolerance::Absolute(0.01));
+        assert!(s > 0.0 && s < 1.0);
+        assert_relative_eq!(calculate_entropy_similarity_matched(&a, &a, MzTolerance::Absolute(0.01)), 1.0, epsilon = 1e-10);
+        // disjoint spectra -> 0
+        let c = Spectrum::from_arrays(&[500.0, 600.0], &[1.0, 1.0]).unwrap();
+        assert_relative_eq!(calculate_entropy_similarity_matched(&a, &c, MzTolerance::Absolute(0.01)), 0.0, epsilon = 1e-10);
+        let empty = Spectrum::<f64>::new();
+        assert_eq!(calculate_entropy_similarity_matched(&a, &empty, MzTolerance::Absolute(0.01)), 0.0);
+    }
+}

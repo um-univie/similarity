@@ -240,7 +240,7 @@ fn bench_transform_edge_cases(c: &mut Criterion) {
         };
         
         // Functional API
-        group.bench_function(&format!("Function/{}", case_name), |b| {
+        group.bench_function(format!("Function/{}", case_name), |b| {
             b.iter(|| {
                 black_box(weight_factor_transformation(
                     black_box(&mzs), 
@@ -252,7 +252,7 @@ fn bench_transform_edge_cases(c: &mut Criterion) {
         });
         
         // Trait API
-        group.bench_function(&format!("Trait/{}", case_name), |b| {
+        group.bench_function(format!("Trait/{}", case_name), |b| {
             b.iter(|| {
                 black_box(WeightFactorTransformation::transform(
                     black_box((&mzs, &intensities, wf_mz, wf_int))
@@ -300,7 +300,7 @@ fn bench_transform_precision_analysis(c: &mut Criterion) {
     
     for (case_name, (wf_mz, wf_int)) in precision_cases {
         // Functional API
-        group.bench_function(&format!("Function/{}", case_name), |b| {
+        group.bench_function(format!("Function/{}", case_name), |b| {
             b.iter(|| {
                 black_box(weight_factor_transformation(
                     black_box(&mzs), 
@@ -312,7 +312,7 @@ fn bench_transform_precision_analysis(c: &mut Criterion) {
         });
         
         // Trait API
-        group.bench_function(&format!("Trait/{}", case_name), |b| {
+        group.bench_function(format!("Trait/{}", case_name), |b| {
             b.iter(|| {
                 black_box(WeightFactorTransformation::transform(
                     black_box((&mzs, &intensities, wf_mz, wf_int))

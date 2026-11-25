@@ -8,7 +8,7 @@ use std::collections::HashSet;
 // ============================================================================
 
 /// Cosine similarity implementation using the Similarity trait
-/// Input: tuple of two slices, Output: Option<f64>
+/// Input: tuple of two slices, Output: `Option<f64>`
 pub struct CosineSimilarity;
 
 impl<T> Similarity<(&[T], &[T]), Option<f64>> for CosineSimilarity
@@ -38,6 +38,27 @@ where
     /// ```
     fn similarity(input: (&[T], &[T])) -> Option<f64> {
         cosine_similarity(input.0, input.1)
+    }
+}
+
+/// SIMD-optimized cosine similarity implementation using pulp
+pub struct CosineSimilarityOptimized;
+
+impl<E: crate::simd::SimdFloat> Similarity<(&[E], &[E]), Option<E>> for CosineSimilarityOptimized {
+    /// Calculate SIMD-optimized cosine similarity between two f64 slices
+    /// 
+    /// # Examples
+    /// 
+    /// ```
+    /// use similarity::{Similarity, similarity_traits::CosineSimilarityOptimized};
+    /// 
+    /// let a = [1.0, 2.0, 3.0];
+    /// let b = [1.0, 2.0, 3.0];
+    /// let result = CosineSimilarityOptimized::similarity((&a, &b));
+    /// assert_eq!(result, Some(1.0));
+    /// ```
+    fn similarity(input: (&[E], &[E])) -> Option<E> {
+        crate::simd::cosine_similarity_simd(input.0, input.1)
     }
 }
 
@@ -84,6 +105,27 @@ where
     }
 }
 
+/// SIMD-optimized cosine distance implementation using pulp
+pub struct CosineDistanceOptimized;
+
+impl<E: crate::simd::SimdFloat> Similarity<(&[E], &[E]), Option<E>> for CosineDistanceOptimized {
+    /// Calculate SIMD-optimized cosine distance between two f64 slices
+    /// 
+    /// # Examples
+    /// 
+    /// ```
+    /// use similarity::{Similarity, similarity_traits::CosineDistanceOptimized};
+    /// 
+    /// let a = [1.0, 0.0];
+    /// let b = [0.0, 1.0];
+    /// let result = CosineDistanceOptimized::similarity((&a, &b));
+    /// assert_eq!(result, Some(1.0));
+    /// ```
+    fn similarity(input: (&[E], &[E])) -> Option<E> {
+        crate::simd::cosine_distance_simd(input.0, input.1)
+    }
+}
+
 
 
 /// Parallel cosine distance implementation
@@ -126,6 +168,27 @@ where
     }
 }
 
+/// SIMD-optimized Euclidean distance implementation using pulp
+pub struct EuclideanDistanceOptimized;
+
+impl<E: crate::simd::SimdFloat> Similarity<(&[E], &[E]), Option<E>> for EuclideanDistanceOptimized {
+    /// Calculate SIMD-optimized Euclidean distance between two f64 slices
+    /// 
+    /// # Examples
+    /// 
+    /// ```
+    /// use similarity::{Similarity, similarity_traits::EuclideanDistanceOptimized};
+    /// 
+    /// let a = [0.0, 0.0];
+    /// let b = [3.0, 4.0];
+    /// let result = EuclideanDistanceOptimized::similarity((&a, &b));
+    /// assert_eq!(result, Some(5.0));
+    /// ```
+    fn similarity(input: (&[E], &[E])) -> Option<E> {
+        crate::simd::euclidean_distance_simd(input.0, input.1)
+    }
+}
+
 /// Squared Euclidean distance implementation
 pub struct SquaredEuclideanDistance;
 
@@ -150,6 +213,48 @@ where
     }
 }
 
+/// SIMD-optimized squared Euclidean distance implementation using pulp
+pub struct SquaredEuclideanDistanceOptimized;
+
+impl<E: crate::simd::SimdFloat> Similarity<(&[E], &[E]), Option<E>> for SquaredEuclideanDistanceOptimized {
+    /// Calculate SIMD-optimized squared Euclidean distance between two f64 slices
+    /// 
+    /// # Examples
+    /// 
+    /// ```
+    /// use similarity::{Similarity, similarity_traits::SquaredEuclideanDistanceOptimized};
+    /// 
+    /// let a = [0.0, 0.0];
+    /// let b = [3.0, 4.0];
+    /// let result = SquaredEuclideanDistanceOptimized::similarity((&a, &b));
+    /// assert_eq!(result, Some(25.0));
+    /// ```
+    fn similarity(input: (&[E], &[E])) -> Option<E> {
+        crate::simd::squared_euclidean_distance_simd(input.0, input.1)
+    }
+}
+
+/// SIMD-optimized Manhattan distance implementation using pulp
+pub struct ManhattanDistanceOptimized;
+
+impl<E: crate::simd::SimdFloat> Similarity<(&[E], &[E]), Option<E>> for ManhattanDistanceOptimized {
+    /// Calculate SIMD-optimized Manhattan distance between two f64 slices
+    /// 
+    /// # Examples
+    /// 
+    /// ```
+    /// use similarity::{Similarity, similarity_traits::ManhattanDistanceOptimized};
+    /// 
+    /// let a = [1.0, 2.0, 3.0];
+    /// let b = [4.0, 6.0, 8.0];
+    /// let result = ManhattanDistanceOptimized::similarity((&a, &b));
+    /// assert_eq!(result, Some(12.0));
+    /// ```
+    fn similarity(input: (&[E], &[E])) -> Option<E> {
+        crate::simd::manhattan_distance_simd(input.0, input.1)
+    }
+}
+
 /// Pearson correlation distance implementation
 pub struct PearsonCorrelationDistance;
 
@@ -171,6 +276,48 @@ where
     /// ```
     fn similarity(input: (&[T], &[T])) -> Option<f64> {
         pearson_correlation_distance(input.0, input.1)
+    }
+}
+
+/// SIMD-optimized Pearson correlation distance implementation using pulp
+pub struct PearsonCorrelationDistanceOptimized;
+
+impl<E: crate::simd::SimdFloat> Similarity<(&[E], &[E]), Option<E>> for PearsonCorrelationDistanceOptimized {
+    /// Calculate SIMD-optimized Pearson correlation distance between two f64 slices
+    /// 
+    /// # Examples
+    /// 
+    /// ```
+    /// use similarity::{Similarity, similarity_traits::PearsonCorrelationDistanceOptimized};
+    /// 
+    /// let x = [1.0, 2.0, 3.0, 4.0, 5.0];
+    /// let y = [2.0, 4.0, 5.0, 4.0, 5.0];
+    /// let result = PearsonCorrelationDistanceOptimized::similarity((&x, &y));
+    /// assert!(result.is_some());
+    /// ```
+    fn similarity(input: (&[E], &[E])) -> Option<E> {
+        crate::simd::pearson_correlation_distance_simd(input.0, input.1)
+    }
+}
+
+/// SIMD-optimized Dot Product implementation using pulp
+pub struct DotProductSimd;
+
+impl<E: crate::simd::SimdFloat> Similarity<(&[E], &[E]), Option<E>> for DotProductSimd {
+    /// Calculate SIMD-optimized dot product between two f64 slices
+    /// 
+    /// # Examples
+    /// 
+    /// ```
+    /// use similarity::{Similarity, similarity_traits::DotProductSimd};
+    /// 
+    /// let a = [1.0, 2.0, 3.0];
+    /// let b = [4.0, 5.0, 6.0];
+    /// let result = DotProductSimd::similarity((&a, &b));
+    /// assert_eq!(result, Some(32.0));
+    /// ```
+    fn similarity(input: (&[E], &[E])) -> Option<E> {
+        crate::simd::dot_product_simd(input.0, input.1)
     }
 }
 
@@ -309,6 +456,27 @@ impl Similarity<(&[f64], &[f64]), Vec<f64>> for CrossCorrelationOptimized {
     }
 }
 
+/// SIMD-accelerated cross-correlation using pulp
+pub struct CrossCorrelationSimd;
+
+impl Similarity<(&[f64], &[f64]), Vec<f64>> for CrossCorrelationSimd {
+    /// Calculate SIMD-accelerated cross-correlation between two f64 arrays
+    /// 
+    /// # Examples
+    /// 
+    /// ```
+    /// use similarity::{Similarity, similarity_traits::CrossCorrelationSimd};
+    /// 
+    /// let x = [1.0, 2.0, 3.0];
+    /// let y = [1.0, 2.0, 3.0];
+    /// let result = CrossCorrelationSimd::similarity((&x, &y));
+    /// assert!(!result.is_empty());
+    /// ```
+    fn similarity(input: (&[f64], &[f64])) -> Vec<f64> {
+        crate::simd::cross_correlate_simd(input.0, input.1)
+    }
+}
+
 /// Cross-correlation parallel implementation
 #[cfg(feature = "parallel")]
 pub struct CrossCorrelationParallel;
@@ -402,10 +570,219 @@ where
 // TESTS
 // ============================================================================
 
+// ============================================================================
+// ADDITIONAL SIMD METRICS (generic over f32 / f64)
+// ============================================================================
+
+macro_rules! simd_metric {
+    ($(#[$m:meta])* $name:ident => $f:path) => {
+        $(#[$m])*
+        pub struct $name;
+
+        impl<E: crate::simd::SimdFloat> Similarity<(&[E], &[E]), Option<E>> for $name {
+            fn similarity(input: (&[E], &[E])) -> Option<E> {
+                $f(input.0, input.1)
+            }
+        }
+    };
+}
+
+simd_metric!(
+    /// SIMD Chebyshev (L∞) distance.
+    ///
+    /// ```
+    /// use similarity::{Similarity, similarity_traits::ChebyshevDistance};
+    /// assert_eq!(ChebyshevDistance::similarity((&[1.0_f32, 5.0][..], &[2.0, 1.0][..])), Some(4.0));
+    /// ```
+    ChebyshevDistance => crate::simd::chebyshev_distance_simd
+);
+simd_metric!(
+    /// SIMD Canberra distance.
+    CanberraDistance => crate::simd::canberra_distance_simd
+);
+simd_metric!(
+    /// SIMD Bray–Curtis dissimilarity.
+    BrayCurtisDistance => crate::simd::bray_curtis_distance_simd
+);
+simd_metric!(
+    /// SIMD chi-squared distance.
+    ChiSquareDistance => crate::simd::chi_square_distance_simd
+);
+simd_metric!(
+    /// SIMD continuous Tanimoto similarity.
+    TanimotoSimilarity => crate::simd::tanimoto_similarity_simd
+);
+simd_metric!(
+    /// SIMD continuous Dice similarity.
+    DiceSimilarity => crate::simd::dice_similarity_simd
+);
+simd_metric!(
+    /// SIMD Ruzicka (weighted Jaccard) similarity.
+    RuzickaSimilarity => crate::simd::ruzicka_similarity_simd
+);
+simd_metric!(
+    /// SIMD histogram intersection.
+    HistogramIntersection => crate::simd::histogram_intersection_simd
+);
+simd_metric!(
+    /// SIMD angular distance.
+    AngularDistance => crate::simd::angular_distance_simd
+);
+simd_metric!(
+    /// SIMD Pearson correlation coefficient *r*.
+    PearsonCorrelation => crate::simd::pearson_correlation_simd
+);
+
+/// Minkowski distance of order `p`. Input: `(a, b, p)`.
+pub struct MinkowskiDistance;
+
+impl<T: Float> Similarity<(&[T], &[T], T), Option<T>> for MinkowskiDistance {
+    fn similarity(input: (&[T], &[T], T)) -> Option<T> {
+        crate::distance_metrics::minkowski_distance(input.0, input.1, input.2)
+    }
+}
+
+/// Dynamic time warping distance. Input: `(a, b, window)`.
+pub struct DtwDistance;
+
+impl<T: Float> Similarity<(&[T], &[T], Option<usize>), Option<T>> for DtwDistance {
+    fn similarity(input: (&[T], &[T], Option<usize>)) -> Option<T> {
+        crate::distance_metrics::dtw_distance(input.0, input.1, input.2)
+    }
+}
+
+/// Levenshtein edit distance between two sequences.
+///
+/// ```
+/// use similarity::{Similarity, similarity_traits::LevenshteinDistance};
+/// assert_eq!(LevenshteinDistance::similarity((&b"kitten"[..], &b"sitting"[..])), 3);
+/// ```
+pub struct LevenshteinDistance;
+
+impl<T: PartialEq> Similarity<(&[T], &[T]), usize> for LevenshteinDistance {
+    fn similarity(input: (&[T], &[T])) -> usize {
+        crate::distance_metrics::levenshtein_distance(input.0, input.1)
+    }
+}
+
+// ============================================================================
+// DISTRIBUTION DIVERGENCES AND RANK CORRELATIONS
+// ============================================================================
+
+macro_rules! float_metric {
+    ($(#[$m:meta])* $name:ident => $f:path, $out:ty) => {
+        $(#[$m])*
+        pub struct $name;
+
+        impl<T: Float> Similarity<(&[T], &[T]), Option<$out>> for $name {
+            fn similarity(input: (&[T], &[T])) -> Option<$out> {
+                $f(input.0, input.1)
+            }
+        }
+    };
+}
+
+float_metric!(
+    /// Kullback–Leibler divergence D_KL(p ‖ q).
+    KullbackLeiblerDivergence => crate::divergences::kl_divergence, T
+);
+float_metric!(
+    /// Jensen–Shannon divergence.
+    JensenShannonDivergence => crate::divergences::js_divergence, T
+);
+float_metric!(
+    /// Jensen–Shannon distance (metric, in [0, 1]).
+    JensenShannonDistance => crate::divergences::js_distance, T
+);
+float_metric!(
+    /// Hellinger distance.
+    HellingerDistance => crate::divergences::hellinger_distance, T
+);
+float_metric!(
+    /// Bhattacharyya distance.
+    BhattacharyyaDistance => crate::divergences::bhattacharyya_distance, T
+);
+float_metric!(
+    /// Total variation distance.
+    TotalVariationDistance => crate::divergences::total_variation_distance, T
+);
+float_metric!(
+    /// Spearman rank correlation ρ.
+    SpearmanCorrelation => crate::statistics::spearman_correlation, f64
+);
+float_metric!(
+    /// Kendall rank correlation τ-b.
+    KendallTau => crate::statistics::kendall_tau, f64
+);
+
+/// Sørensen–Dice coefficient of two sets.
+pub struct DiceCoefficient;
+
+impl<T: Eq + std::hash::Hash> Similarity<(&HashSet<T>, &HashSet<T>), f64> for DiceCoefficient {
+    fn similarity(input: (&HashSet<T>, &HashSet<T>)) -> f64 {
+        crate::set_metrics::dice_coefficient(input.0, input.1)
+    }
+}
+
+/// Overlap coefficient of two sets.
+pub struct OverlapCoefficient;
+
+impl<T: Eq + std::hash::Hash> Similarity<(&HashSet<T>, &HashSet<T>), f64> for OverlapCoefficient {
+    fn similarity(input: (&HashSet<T>, &HashSet<T>)) -> f64 {
+        crate::set_metrics::overlap_coefficient(input.0, input.1)
+    }
+}
+
+// ============================================================================
+// MATCHED SPECTRAL SIMILARITIES
+// ============================================================================
+
+/// Greedy spectral cosine with m/z tolerance (plain intensities).
+/// Input: `(spectrum_a, spectrum_b, tolerance)`. Output: score.
+pub struct SpectralCosine;
+
+impl<T: Float> Similarity<(&crate::Spectrum<T>, &crate::Spectrum<T>, crate::MzTolerance<T>), T> for SpectralCosine {
+    fn similarity(input: (&crate::Spectrum<T>, &crate::Spectrum<T>, crate::MzTolerance<T>)) -> T {
+        crate::spectral_cosine_similarity(input.0, input.1, input.2, T::zero(), T::one()).0
+    }
+}
+
+/// Entropy similarity with m/z-tolerant peak matching.
+/// Input: `(spectrum_a, spectrum_b, tolerance)`.
+pub struct EntropySimilarityMatched;
+
+impl<T> Similarity<(&crate::Spectrum<T>, &crate::Spectrum<T>, crate::MzTolerance<T>), T> for EntropySimilarityMatched
+where
+    T: Float + std::iter::Sum<T> + num_traits::FromPrimitive + num_traits::ToPrimitive,
+{
+    fn similarity(input: (&crate::Spectrum<T>, &crate::Spectrum<T>, crate::MzTolerance<T>)) -> T {
+        crate::calculate_entropy_similarity_matched(input.0, input.1, input.2)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn test_extended_traits() {
+        let a = [1.0_f32, 2.0, 0.0];
+        let b = [2.0_f32, 1.0, 1.0];
+        assert_eq!(ChebyshevDistance::similarity((&a[..], &b[..])), crate::simd::chebyshev_distance_simd(&a, &b));
+        assert_eq!(CosineSimilarityOptimized::similarity((&a[..], &b[..])), crate::simd::cosine_similarity_simd(&a, &b));
+        assert!(TanimotoSimilarity::similarity((&a[..], &b[..])).is_some());
+        let p = [0.2, 0.3, 0.5];
+        let q = [0.3, 0.3, 0.4];
+        assert!(KullbackLeiblerDivergence::similarity((&p[..], &q[..])).unwrap() > 0.0);
+        assert!(JensenShannonDistance::similarity((&p[..], &q[..])).unwrap() > 0.0);
+        assert_eq!(SpearmanCorrelation::similarity((&p[..], &p[..])), Some(1.0));
+        assert_eq!(MinkowskiDistance::similarity((&p[..], &p[..], 3.0)), Some(0.0));
+        let s = crate::Spectrum::from_arrays(&[100.0, 200.0], &[1.0, 2.0]).unwrap();
+        let tol = crate::MzTolerance::Absolute(0.01);
+        assert!((SpectralCosine::similarity((&s, &s, tol)) - 1.0_f64).abs() < 1e-12);
+        assert!((EntropySimilarityMatched::similarity((&s, &s, tol)) - 1.0_f64).abs() < 1e-12);
+    }
 
     #[test]
     fn test_cosine_similarity_trait() {

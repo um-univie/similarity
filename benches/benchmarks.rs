@@ -2,7 +2,6 @@ use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
 use std::hint::black_box;
 use similarity::similarity_metrics::*;
 use rand::prelude::*;
-use rand;
 use std::time::Duration;
 
 fn create_test_data(size: usize) -> Vec<f64> {

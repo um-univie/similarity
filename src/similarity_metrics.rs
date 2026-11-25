@@ -288,6 +288,9 @@ pub fn jaccard_index<T: Eq + std::hash::Hash>(set1: &HashSet<T>, set2: &HashSet<
 
 /// Optimized version of cross-correlation using block processing for better cache utilization
 pub fn cross_correlate(x: &[f64], y: &[f64]) -> Vec<f64> {
+    if x.is_empty() || y.is_empty() {
+        return Vec::new();
+    }
     let x_length = x.len();
     let y_length = y.len();
     let max_lag = x_length + y_length - 1;
@@ -326,6 +329,9 @@ pub fn cross_correlate(x: &[f64], y: &[f64]) -> Vec<f64> {
 /// Parallel version of cross-correlation using rayon with block processing
 #[cfg(feature = "parallel")]
 pub fn cross_correlate_parallel(x: &[f64], y: &[f64]) -> Vec<f64> {
+    if x.is_empty() || y.is_empty() {
+        return Vec::new();
+    }
     let x_length = x.len();
     let y_length = y.len();
     let max_lag = x_length + y_length - 1;
@@ -365,6 +371,9 @@ pub fn cross_correlate_parallel(x: &[f64], y: &[f64]) -> Vec<f64> {
 /// Optimized FFT-based cross-correlation with cached planner
 #[cfg(feature = "fft")]
 pub fn cross_correlate_fft(x: &[f64], y: &[f64]) -> Vec<f64> {
+    if x.is_empty() || y.is_empty() {
+        return Vec::new();
+    }
     let x_len = x.len();
     let y_len = y.len();
     let total_len = x_len + y_len - 1;
@@ -404,17 +413,17 @@ pub fn cross_correlate_fft(x: &[f64], y: &[f64]) -> Vec<f64> {
         .collect()
 }
 
+/// Index of the maximum of the full cross-correlation of `x` and `y`
+/// (`None` for empty input). NaN values are ignored.
 pub fn find_time_shift(x: &[f64], y: &[f64]) -> Option<usize> {
     let cross_correlation = cross_correlate(x, y);
-    let max_index = cross_correlation.iter().enumerate().max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())?.0;
-    Some(max_index)
+    crate::simd::argmax(&cross_correlation)
 }
 
 #[cfg(feature = "fft")]
 pub fn find_time_shift_fft(x: &[f64], y: &[f64]) -> Option<usize> {
     let cross_correlation = cross_correlate_fft(x, y);
-    let max_index = cross_correlation.iter().enumerate().max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())?.0;
-    Some(max_index)
+    crate::simd::argmax(&cross_correlation)
 }
 
 /// Calculates the Pearson correlation distance between two slices.
@@ -548,6 +557,18 @@ mod tests {
                 assert_relative_eq!(a, b, epsilon = 1e-10);
             });
         }
+    }
+
+    #[test]
+    fn cross_correlation_empty_inputs_do_not_panic() {
+        assert!(cross_correlate(&[], &[1.0]).is_empty());
+        assert!(cross_correlate(&[1.0], &[]).is_empty());
+        #[cfg(feature = "parallel")]
+        assert!(cross_correlate_parallel(&[], &[]).is_empty());
+        #[cfg(feature = "fft")]
+        assert!(cross_correlate_fft(&[], &[1.0]).is_empty());
+        assert_eq!(find_time_shift(&[], &[]), None);
+        assert_eq!(find_time_shift(&[f64::NAN, 1.0], &[1.0]), Some(1));
     }
 
     #[test]
