@@ -165,6 +165,7 @@ fn divergences_match_scalar() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn spectral_entropy_matches_reference() {
     use crate::{calculate_entropy_similarity, Spectrum};
     for_each_isa(|isa| {

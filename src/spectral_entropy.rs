@@ -300,7 +300,16 @@ pub fn calculate_tsallis_entropy<T: Float + std::iter::Sum<T>>(spectrum: &Spectr
     entropy
 }
 
-/// Calculates the entropy similarity between two spectra
+/// Calculates the entropy similarity between two spectra, pairing peaks
+/// **by index** (peak `i` of one spectrum with peak `i` of the other).
+///
+/// This is only meaningful if both spectra share the same m/z grid. Use
+/// [`calculate_entropy_similarity_matched`] (m/z-tolerant matching) or
+/// [`crate::flash_entropy::FlashEntropyIndex`] for real spectra.
+#[deprecated(
+    since = "0.3.0",
+    note = "pairs peaks by index; use `calculate_entropy_similarity_matched` or `FlashEntropyIndex`"
+)]
 pub fn calculate_entropy_similarity<T: Float + std::iter::Sum<T> + FromPrimitive + ToPrimitive>(
     spectrum1: &Spectrum<T>,
     spectrum2: &Spectrum<T>
@@ -377,7 +386,7 @@ pub enum MzTolerance<T> {
 
 impl<T: Float> MzTolerance<T> {
     #[inline]
-    fn matches(self, a: T, b: T) -> bool {
+    pub(crate) fn matches(self, a: T, b: T) -> bool {
         let d = (a - b).abs();
         match self {
             MzTolerance::Absolute(t) => d <= t,
@@ -387,7 +396,7 @@ impl<T: Float> MzTolerance<T> {
 
     /// Upper bound of the absolute tolerance window around `mz`.
     #[inline]
-    fn window(self, mz: T) -> T {
+    pub(crate) fn window(self, mz: T) -> T {
         match self {
             MzTolerance::Absolute(t) => t,
             // the larger m/z of a matching pair is at most mz·(1+ε)/(1−ε); use a safe bound
@@ -561,6 +570,7 @@ pub fn calculate_entropy_similarity_matched<T: Float + std::iter::Sum<T> + FromP
 
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;

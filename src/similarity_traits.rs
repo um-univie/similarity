@@ -559,6 +559,7 @@ where
     /// let similarity = EntropySimilarity::similarity((&spectrum1, &spectrum2));
     /// assert!(similarity >= 0.0);
     /// ```
+    #[allow(deprecated)]
     fn similarity(input: (&crate::Spectrum<T>, &crate::Spectrum<T>)) -> T {
         crate::spectral_entropy::calculate_entropy_similarity(input.0, input.1)
     }

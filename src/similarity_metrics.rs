@@ -269,11 +269,6 @@ pub fn overshoot_rate<T>(actual: &[T], predicted: &[T], tolerance: T) -> Option<
     }
 }
 
-pub trait Sqrt {
-    type Output;
-    fn sqrt(self) -> Self::Output;
-}
-
 pub fn jaccard_index<T: Eq + std::hash::Hash>(set1: &HashSet<T>, set2: &HashSet<T>) -> f64 {
     let intersection = set1.intersection(set2).count();
     let union: usize = set1.union(set2).count();

@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
 use std::hint::black_box;
 use similarity::spectral_entropy::*;
