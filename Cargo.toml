@@ -1,6 +1,6 @@
 [package]
 name = "similarity"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 # The optional `avx512` feature needs Rust >= 1.89.
 rust-version = "1.83"
@@ -11,6 +11,7 @@ readme = "README.md"
 keywords = ["similarity", "distance", "correlation", "entropy", "statistics"]
 categories = ["science", "algorithms", "mathematics"]
 authors = ["Manuel Uhlir <manuel.uhlir@univie.ac.at>"]
+exclude = ["python/", ".github/"]
 
 [lib]
 name = "similarity"

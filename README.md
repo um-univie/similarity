@@ -14,6 +14,8 @@ A comprehensive Rust library for calculating similarity metrics between vectors,
 - **Many metrics**: Minkowski family, Canberra, Bray–Curtis, χ², Tanimoto, Dice, Ruzicka, Hamming (incl. bit fingerprints), Levenshtein, LCS, DTW, KL / JS / Rényi / Hellinger / Bhattacharyya / Wasserstein, Spearman, Kendall τ-b, Lin's CCC, MAE / MSE / RMSE / MAPE / sMAPE / R²
 - **Mass spectrometry**: m/z-tolerant (Da or ppm) greedy peak matching, modified spectral cosine and peak-matched entropy similarity
 - **Flash entropy search**: indexed library search with the spectral entropy similarity (Li & Fiehn 2023): ~2000× faster than brute force on a 100k-spectrum library, exact on cleaned spectra
+- **Batch library search**: precursor-filtered identity search with entropy or modified-cosine scoring, min-peaks / min-score thresholds, top-k, all-vs-all similarity matrices (molecular networking)
+- **Python bindings** (`python/`, PyO3 + NumPy): vector metrics, `cdist` / `pdist` / `top_k`, divergences, Flash entropy and library search, GIL released
 - **Vectorised `ln` / `exp` / `pow` / `sqrt`** (≤ 2 ulp): SIMD Shannon entropy, KL, cross-entropy, Jensen–Shannon, Bhattacharyya, Hellinger and spectral entropy weighting
 - **Semantically Correct Trait System**: Separate traits for different types of calculations
 - **Zero-Cost Abstractions**: Trait calls compile to direct function calls
@@ -53,7 +55,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-similarity = "0.2.0"
+similarity = "0.3.0"
 ```
 
 ### Trait-Based API Examples
@@ -152,7 +154,7 @@ let (cos, n_matched) = spectral_cosine_similarity(&query, &reference, tol, 0.0, 
 let entropy = calculate_entropy_similarity_matched(&query, &reference, tol);
 ```
 
-`calculate_entropy_similarity` (the original function) pairs peaks by index.
+`calculate_entropy_similarity` (the original function) pairs peaks by index and is deprecated since 0.3.0.
 Use `calculate_entropy_similarity_matched` when the two spectra do not have the same peak list.
 
 ### Flash entropy library search
@@ -169,13 +171,49 @@ Spectra are cleaned (peaks closer than 2 × tolerance merged, optional noise
 filter and top-N), normalised and entropy-weighted. Scores equal
 `calculate_entropy_similarity_matched` on the cleaned spectra.
 
+### Batch library search with precursor filtering
+
+```rust
+use similarity::library_search::{LibrarySearchOptions, SpectralLibrary};
+use similarity::MzTolerance;
+
+let opts = LibrarySearchOptions::cosine(MzTolerance::Ppm(10.0))       // or ::entropy(..)
+    .with_precursor_tolerance(MzTolerance::Absolute(0.01))
+    .with_min_matched_peaks(3);
+let lib = SpectralLibrary::with_precursors(&library, &precursor_mz, opts)?;
+let hits = lib.search(&query, Some(query_precursor), 10);          // Vec<LibraryHit>
+let all = lib.search_many(&queries, Some(&query_precursors), 10)?;  // parallel
+let network = lib.similarity_matrix();                              // n × n, symmetric
+```
+
+Library spectra are cleaned once, so each query–library pair is scored with
+one linear merge. Use `FlashEntropyIndex` for open (no precursor) entropy
+search over large libraries.
+
+### Python
+
+```bash
+cd python && uv venv && uv pip install maturin numpy pytest
+uv run maturin develop --release && uv run pytest tests
+```
+
+```python
+import similarity_rs as sr
+d = sr.cdist(x, y, "cosine_distance")                 # float32 or float64
+index = sr.FlashEntropyIndex([(mz, intensity), ...], tolerance=0.01)
+idx, scores = index.search_top_k(q_mz, q_int, 10)
+lib = sr.SpectralLibrary(spectra, precursor_mz=prec, metric="cosine", precursor_tolerance=0.01)
+```
+
+See [`python/README.md`](python/README.md).
+
 ## Performance Features
 
 ### Optional Dependencies
 
 ```toml
 [dependencies]
-similarity = { version = "0.2.0", features = ["parallel", "fft"] }
+similarity = { version = "0.3.0", features = ["parallel", "fft"] }
 ```
 
 - **`parallel`**: Enables Rayon-based parallel processing for large datasets
@@ -237,6 +275,8 @@ The crate offers three tiers of execution depending on your data size and hardwa
    | brute-force `calculate_entropy_similarity_matched` | 164 ms |
    | `FlashEntropyIndex::search` | 0.075 ms |
    | index build (one-off) | 59 ms |
+   | `SpectralLibrary::search`, all spectra (entropy) | 40 ms |
+   | `SpectralLibrary::search`, 10 ppm precursor filter | 0.0009 ms |
 
    | Batch | Naive loop | `batch` | Speed-up |
    |---|---|---|---|
