@@ -84,7 +84,7 @@ impl<E: SimdFloat> FlashEntropyOptions<E> {
     }
 
     #[inline]
-    fn half_window(&self, mz: E) -> E {
+    pub(crate) fn half_window(&self, mz: E) -> E {
         match self.tolerance {
             MzTolerance::Absolute(t) => t,
             MzTolerance::Ppm(p) => mz.abs() * p * E::from_f64_(1e-6),
@@ -272,7 +272,7 @@ impl<E: SimdFloat> FlashEntropyIndex<E> {
     }
 }
 
-fn top_k_scores<E: SimdFloat>(scores: Vec<E>, k: usize) -> Vec<Neighbor<E>> {
+pub(crate) fn top_k_scores<E: SimdFloat>(scores: Vec<E>, k: usize) -> Vec<Neighbor<E>> {
     let mut hits: Vec<Neighbor<E>> = scores
         .into_iter()
         .enumerate()

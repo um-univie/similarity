@@ -4,6 +4,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rand::Rng;
 use similarity::batch::{self, Metric};
+use similarity::library_search::{LibrarySearchOptions, SpectralLibrary};
 use similarity::distance_metrics;
 use similarity::divergences;
 use similarity::flash_entropy::{FlashEntropyIndex, FlashEntropyOptions};
@@ -194,6 +195,17 @@ fn bench_flash(c: &mut Criterion) {
                 .collect::<Vec<_>>()
         })
     });
+    let precursors: Vec<f64> = (0..library.len()).map(|_| rng.random_range(100.0..1000.0)).collect();
+    let entropy = LibrarySearchOptions::entropy(MzTolerance::Absolute(0.01));
+    let lib = SpectralLibrary::new(&library, entropy);
+    g.bench_function("library_all_entropy", |bch| bch.iter(|| lib.search(black_box(&query), None, 10)));
+    let filtered = SpectralLibrary::with_precursors(
+        &library,
+        &precursors,
+        entropy.with_precursor_tolerance(MzTolerance::Ppm(10.0)),
+    )
+    .unwrap();
+    g.bench_function("library_precursor_10ppm", |bch| bch.iter(|| filtered.search(black_box(&query), Some(500.0), 10)));
     g.finish();
 }
 

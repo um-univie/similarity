@@ -13,6 +13,7 @@ pub mod divergences;
 pub mod statistics;
 pub mod set_metrics;
 pub mod flash_entropy;
+pub mod library_search;
 
 // New trait system with semantic separation
 pub mod traits;
