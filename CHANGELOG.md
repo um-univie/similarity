@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - unreleased
+
+### Added
+- `sparse` module: `SparseVector` with dot, cosine, Euclidean, Manhattan,
+  Jaccard, Tanimoto and Ruzicka; `SparseIndex` (inverted index) with
+  `scores`, `top_k` and `top_k_many`; `sparse_cdist`.
+- Property-based tests (proptest) for metric axioms, SIMD against scalar
+  results, tiled against per-pair `cdist`, sparse against dense, and Flash
+  entropy against `SpectralLibrary`.
+
+### Changed
+- `cdist`, `pairwise`, `pdist` and `top_k_many` compute dot product, cosine
+  and Euclidean metrics with a register-blocked tile kernel, 2 to 3 times
+  faster on large inputs. `pairwise` results are now exactly symmetric.
+- Reworded the crate description and the README introduction.
+
 ## [0.3.0] - 2026-11-26
 
 ### Added
