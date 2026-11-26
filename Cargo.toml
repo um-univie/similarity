@@ -11,7 +11,7 @@ readme = "README.md"
 keywords = ["similarity", "distance", "correlation", "entropy", "statistics"]
 categories = ["science", "algorithms", "mathematics"]
 authors = ["Manuel Uhlir <manuel.uhlir@univie.ac.at>"]
-exclude = ["python/", ".github/"]
+exclude = ["python/", "benchmarks/", ".github/"]
 
 [lib]
 name = "similarity"
@@ -31,11 +31,14 @@ approx = "0.5"
 proptest = "1.9.0"
 
 [features]
-default = ["parallel", "fft"]
+default = ["parallel", "fft", "accelerate"]
 parallel = ["rayon"]
 fft = ["rustfft"]
 # Enables AVX-512 kernels on x86-64 CPUs that support them (runtime-detected).
 avx512 = ["pulp/x86-v4"]
+# Uses Apple's Accelerate framework for dense dot-product and cosine
+# matrices on macOS. Has no effect on other platforms.
+accelerate = []
 
 [package.metadata.docs.rs]
 all-features = true
