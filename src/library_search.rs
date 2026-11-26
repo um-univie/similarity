@@ -296,7 +296,9 @@ impl<E: SimdFloat> SpectralLibrary<E> {
 
     /// Dense, symmetric `len × len` matrix (row-major) of the similarity
     /// between all library spectra, ignoring precursors and thresholds.
-    /// The diagonal is `1` for every non-empty spectrum.
+    /// Entry `(i, j)` with `i ≤ j` is the score of spectrum `i` as the query
+    /// against spectrum `j`; the lower triangle is mirrored. The diagonal is
+    /// `1` for every non-empty spectrum.
     pub fn similarity_matrix(&self) -> Vec<E> {
         let n = self.len();
         let rows: Vec<usize> = (0..n).collect();
@@ -498,8 +500,11 @@ mod tests {
             for j in 0..30 {
                 assert_eq!(m[i * 30 + j], m[j * 30 + i]);
             }
+            // With a ppm tolerance the window is centred on the query peak, so
+            // score(i, j) and score(j, i) can differ at the window edge; the
+            // matrix holds score(i, j) for i <= j.
             let row = sl.score_all(&lib[i]);
-            for j in 0..30 {
+            for j in i..30 {
                 assert!((row[j].0 - m[i * 30 + j]).abs() < 1e-12);
             }
         }
