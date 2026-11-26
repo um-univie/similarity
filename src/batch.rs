@@ -216,14 +216,10 @@ fn tile_op(metric: Metric) -> Option<simd::TileOp> {
     }
 }
 
-/// Rows of `A` per parallel work item in [`blocked`].
-const ROW_BLOCK: usize = 32;
-
 /// `metric` between all rows of `a` and `b` (`a.len() × b.len()`, row
-/// major) with the register-blocked tile kernel. Rows of `b` are processed
-/// in column blocks of about 256 KiB so they stay in L2 while a row block
-/// of `a` passes over them. With `same`, only the upper triangle is
-/// computed and then mirrored, so the result is exactly symmetric.
+/// major) with the GEMM-style kernel in `simd::tile`. With `same`, only the
+/// upper triangle is computed and then mirrored, so the result is exactly
+/// symmetric.
 fn blocked<E, R1, R2>(a: &[R1], b: &[R2], metric: Metric, op: simd::TileOp, same: bool) -> Vec<E>
 where
     E: SimdFloat,
@@ -237,57 +233,96 @@ where
     }
     let ar: Vec<&[E]> = a.iter().map(|r| r.as_ref()).collect();
     let br: Vec<&[E]> = b.iter().map(|r| r.as_ref()).collect();
-    let dim = ar[0].len().max(1);
-    let col_block = (256 * 1024 / (dim * core::mem::size_of::<E>())).clamp(16, 4096) / 4 * 4;
     let cos = matches!(metric, Metric::Cosine | Metric::CosineDistance);
     let na = if cos { norms(a) } else { Vec::new() };
     let nb = if cos && !same { norms(b) } else { Vec::new() };
+    let nb = if same { &na } else { &nb };
 
-    let work = |blk: usize, chunk: &mut [E]| {
-        let g0 = blk * ROW_BLOCK;
-        let rows = &ar[g0..(g0 + ROW_BLOCK).min(m)];
-        let mut j0 = if same { g0 / 4 * 4 } else { 0 };
-        while j0 < n {
-            let j1 = (j0 + col_block).min(n);
-            let upper = if same { Some(g0 as isize - j0 as isize) } else { None };
-            simd::tile_block(op, rows, &br[j0..j1], &mut chunk[j0..], n, upper);
-            j0 = j1;
-        }
-        // Turn raw dot products / squared distances into the metric.
-        for (r, row) in chunk.chunks_mut(n).enumerate() {
-            let i = g0 + r;
-            let first = if same { i } else { 0 };
-            for (j, v) in row.iter_mut().enumerate().skip(first) {
-                *v = match metric {
-                    Metric::Euclidean => v.sqrt(),
-                    Metric::Cosine | Metric::CosineDistance => {
-                        let den = na[i] * if same { na[j] } else { nb[j] };
-                        if den == E::zero() {
-                            E::nan()
-                        } else if metric == Metric::Cosine {
-                            *v / den
-                        } else {
-                            E::one() - *v / den
-                        }
-                    }
-                    _ => *v,
-                };
+    // Turns raw dot products / squared distances into the metric, row by
+    // row while the row is still in cache.
+    let finish = |i: usize, row: &mut [E]| {
+        let first = if same { i } else { 0 };
+        match metric {
+            Metric::Euclidean => row[first..].iter_mut().for_each(|v| *v = v.sqrt()),
+            Metric::Cosine | Metric::CosineDistance => {
+                let distance = metric == Metric::CosineDistance;
+                for (v, &nj) in row[first..].iter_mut().zip(&nb[first..]) {
+                    let den = na[i] * nj;
+                    let c = if den == E::zero() { E::nan() } else { *v / den };
+                    *v = if distance { E::one() - c } else { c };
+                }
             }
+            _ => {}
         }
     };
-    #[cfg(feature = "parallel")]
-    data.par_chunks_mut(ROW_BLOCK * n).enumerate().for_each(|(b, c)| work(b, c));
-    #[cfg(not(feature = "parallel"))]
-    data.chunks_mut(ROW_BLOCK * n).enumerate().for_each(|(b, c)| work(b, c));
+    if !(op == simd::TileOp::Dot && accelerated_dot(&ar, &br, &mut data, &finish)) {
+        simd::all_pairs(op, &ar, &br, &mut data, same, &finish);
+    }
 
     if same {
-        for i in 0..n {
+        mirror_upper(&mut data, n);
+    }
+    data
+}
+
+/// Copies the upper triangle of the `n × n` matrix into the lower one.
+fn mirror_upper<E: Copy + Send + Sync>(data: &mut [E], n: usize) {
+    assert_eq!(data.len(), n * n);
+    struct Ptr<E>(*mut E);
+    // SAFETY: shared across threads only as described in `copy_row`.
+    unsafe impl<E: Send> Send for Ptr<E> {}
+    unsafe impl<E: Send> Sync for Ptr<E> {}
+    impl<E: Copy> Ptr<E> {
+        /// Fills row `i` left of the diagonal from column `i` above it.
+        ///
+        /// SAFETY: each call writes only entries `(i, j)` with `j < i`, which
+        /// no other call reads or writes, and reads only entries `(j, i)`
+        /// with `j < i`, which no call writes.
+        unsafe fn copy_row(&self, i: usize, n: usize) {
             for j in 0..i {
-                data[i * n + j] = data[j * n + i];
+                *self.0.add(i * n + j) = *self.0.add(j * n + i);
             }
         }
     }
-    data
+    let p = Ptr(data.as_mut_ptr());
+    // Below a few hundred rows the copy is cheaper than spawning tasks.
+    #[cfg(feature = "parallel")]
+    if n >= 512 {
+        (1..n).into_par_iter().for_each(|i| unsafe { p.copy_row(i, n) });
+        return;
+    }
+    (1..n).for_each(|i| unsafe { p.copy_row(i, n) });
+}
+
+/// Dot products through Accelerate on macOS (see `crate::accelerate`),
+/// followed by `finish` on every row. Returns `false` if not used.
+#[cfg(all(feature = "accelerate", target_os = "macos"))]
+fn accelerated_dot<E: SimdFloat>(a: &[&[E]], b: &[&[E]], out: &mut [E], finish: &(dyn Fn(usize, &mut [E]) + Sync)) -> bool {
+    if !crate::accelerate::gemm_abt(a, b, out) {
+        return false;
+    }
+    let n = b.len();
+    #[cfg(feature = "parallel")]
+    out.par_chunks_mut(n).enumerate().for_each(|(i, r)| finish(i, r));
+    #[cfg(not(feature = "parallel"))]
+    out.chunks_mut(n).enumerate().for_each(|(i, r)| finish(i, r));
+    true
+}
+
+#[cfg(not(all(feature = "accelerate", target_os = "macos")))]
+fn accelerated_dot<E: SimdFloat>(_: &[&[E]], _: &[&[E]], _: &mut [E], _: &(dyn Fn(usize, &mut [E]) + Sync)) -> bool {
+    false
+}
+
+/// Backend used for dense dot-product and cosine matrices in [`cdist`],
+/// [`pairwise`] and [`pdist`]: `"accelerate"` on macOS with the default
+/// `accelerate` feature, otherwise `"simd"`.
+pub fn dense_backend() -> &'static str {
+    if cfg!(all(feature = "accelerate", target_os = "macos")) {
+        "accelerate"
+    } else {
+        "simd"
+    }
 }
 
 /// Full `n × n` matrix of `metric` between all rows.

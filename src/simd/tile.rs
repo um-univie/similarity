@@ -1,19 +1,23 @@
-//! Register-blocked kernels for all-pairs dot products and squared
-//! Euclidean distances (the inner loop of `cdist` / `pdist`).
+//! GEMM-style kernel for all-pairs dot products and squared Euclidean
+//! distances (the inner loop of `cdist` / `pdist` / `pairwise`).
 //!
-//! A naive all-pairs loop loads two registers for every fused multiply-add.
-//! The micro-kernel here computes an `R × C` tile of results at once: per
-//! step it loads `R` registers from rows of `A` and `C` from rows of `B` and
-//! performs `R · C` FMAs, so loads per FMA drop from 2 to `(R + C) / (R · C)`.
-//! Callers block the work so the rows of one tile stay in cache.
+//! The layout follows BLIS-style `gemm`. `B` is packed into slabs of
+//! `NR = V × lanes` rows stored dimension-major, so one SIMD load reads the
+//! same dimension of `V × lanes` different rows; `A` is packed into
+//! micro-panels of `MR` rows. The micro-kernel keeps an `MR × NR` block of
+//! results in registers and, for every dimension, broadcasts one value per
+//! row of `A` and updates the block with `MR × V` fused multiply-adds, so no
+//! horizontal sums are needed. The depth is split into blocks of `KC` and
+//! the columns into blocks that fit in L2. Squared distances are accumulated as `Σ (a − b)²`, so
+//! they keep full accuracy (unlike the `|a|² + |b|² − 2a·b` shortcut).
 
 use super::element::SimdFloat;
 use pulp::{Simd, WithSimd};
 
-/// A row split into whole SIMD registers and a scalar tail.
-type Split<'a, E, S> = (&'a [<E as SimdFloat>::V<S>], &'a [E]);
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
-/// Pairwise operation computed by a tile.
+/// Pairwise operation computed by the kernel.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum TileOp {
     /// `Σ a·b`
@@ -22,155 +26,261 @@ pub(crate) enum TileOp {
     SqDiff,
 }
 
-/// Fills `out[i * ldo + j]` with `op(a[i], b[j])` for all `i`, `j`. With
-/// `upper = Some(diag)`, column groups lying entirely in `j < i + diag` are
-/// skipped (the caller fills them by mirroring). All rows must have the
-/// same length.
-pub(crate) fn tile_block<E: SimdFloat>(
+/// Depth (`k`) block: one packed micro-panel of `A` (`MR × KC`) stays in
+/// L1 while it is multiplied with every panel of a column block.
+const KC: usize = 256;
+
+/// Target size of one column block of packed `B` (kept in L2).
+const L2_BLOCK_BYTES: usize = 256 * 1024;
+
+/// Callback applied to every finished output row: `(row index, row)`.
+pub(crate) type RowFinish<'f, E> = &'f (dyn Fn(usize, &mut [E]) + Sync);
+
+/// Fills `out` (`a.len() × b.len()`, row-major) with `op(a[i], b[j])` and
+/// then calls `finish(i, row)` on each output row. With `upper`, `a` and `b`
+/// must be the same rows and only entries with `j ≥ i` are guaranteed to be
+/// computed (the caller mirrors the rest). All rows must have the same
+/// length.
+pub(crate) fn all_pairs<E: SimdFloat>(
     op: TileOp,
     a: &[&[E]],
     b: &[&[E]],
     out: &mut [E],
-    ldo: usize,
-    upper: Option<isize>,
+    upper: bool,
+    finish: RowFinish<'_, E>,
 ) {
-    super::isa::dispatch(Block { op, a, b, out, ldo, upper })
+    let (m, n) = (a.len(), b.len());
+    if m == 0 || n == 0 {
+        return;
+    }
+    // Work is split over row blocks of `A`. With few rows and many columns
+    // that leaves cores idle, so compute the transposed problem instead
+    // (both operations are symmetric) and transpose the result.
+    if !upper && m < 256 && n >= 4 * m {
+        let mut t = vec![E::zero(); n * m];
+        all_pairs(op, b, a, &mut t, false, &|_, _| {});
+        let fill = |(i, row): (usize, &mut [E])| {
+            for (j, v) in row.iter_mut().enumerate() {
+                *v = t[j * m + i];
+            }
+            finish(i, row);
+        };
+        #[cfg(feature = "parallel")]
+        out.par_chunks_mut(n).enumerate().for_each(fill);
+        #[cfg(not(feature = "parallel"))]
+        out.chunks_mut(n).enumerate().for_each(fill);
+        return;
+    }
+    super::isa::dispatch(AllPairs { op, a, b, out, upper, finish })
 }
 
-struct Block<'a, 'o, E> {
+struct AllPairs<'a, 'o, 'f, E> {
     op: TileOp,
     a: &'a [&'a [E]],
     b: &'a [&'a [E]],
     out: &'o mut [E],
-    ldo: usize,
-    upper: Option<isize>,
+    upper: bool,
+    finish: RowFinish<'f, E>,
 }
 
-impl<E: SimdFloat> WithSimd for Block<'_, '_, E> {
+impl<E: SimdFloat> WithSimd for AllPairs<'_, '_, '_, E> {
     type Output = ();
 
     #[inline(always)]
     fn with_simd<S: Simd>(self, s: S) -> Self::Output {
-        let Block { op, a, b, out, ldo, upper } = self;
+        // Register tile: MR rows × V registers. 8 × 3 uses 24 accumulators
+        // (NEON, AVX-512: 32 registers); 6 × 2 uses 12 (AVX2: 16 registers).
         if S::REGISTER_COUNT >= 32 {
-            rows_by::<E, S, 4>(s, op, a, b, out, ldo, upper);
+            self.run::<S, 8, 3>(s)
         } else {
-            rows_by::<E, S, 2>(s, op, a, b, out, ldo, upper);
+            self.run::<S, 6, 2>(s)
         }
     }
 }
 
-#[inline(always)]
-fn rows_by<E: SimdFloat, S: Simd, const R: usize>(
-    s: S,
-    op: TileOp,
-    a: &[&[E]],
-    b: &[&[E]],
-    out: &mut [E],
-    ldo: usize,
-    upper: Option<isize>,
-) {
-    let full = a.len() / R * R;
-    let mut i = 0;
-    while i < full {
-        row_group::<E, S, R>(s, op, &a[i..i + R], i, b, out, ldo, upper);
-        i += R;
-    }
-    while i < a.len() {
-        row_group::<E, S, 1>(s, op, &a[i..i + 1], i, b, out, ldo, upper);
-        i += 1;
+impl<E: SimdFloat> AllPairs<'_, '_, '_, E> {
+    #[inline(always)]
+    fn run<S: Simd, const MR: usize, const V: usize>(self, s: S) {
+        let AllPairs { op, a, b, out, upper, finish } = self;
+        let (n, d) = (b.len(), a[0].len());
+        if d == 0 {
+            out.iter_mut().for_each(|v| *v = E::zero());
+        }
+        let nr = V * E::lanes::<S>();
+        let packed = pack_b(b, nr, d);
+        // Up to 8 micro-panels per task, fewer if that would leave cores idle.
+        #[cfg(feature = "parallel")]
+        let threads = rayon::current_num_threads().max(1);
+        #[cfg(not(feature = "parallel"))]
+        let threads = 1;
+        let mb = (a.len() / (2 * threads) / MR).clamp(1, 8) * MR;
+        let task = |(blk, chunk): (usize, &mut [E])| {
+            let block = RowBlock::<E, MR, V> { op, a, i0: blk * mb, packed: &packed, n, out: chunk, upper, finish };
+            s.vectorize(block);
+        };
+        #[cfg(feature = "parallel")]
+        out.par_chunks_mut(mb * n).enumerate().for_each(task);
+        #[cfg(not(feature = "parallel"))]
+        out.chunks_mut(mb * n).enumerate().for_each(task);
     }
 }
 
-/// One group of `R` rows of `A` against all rows of `B`.
-#[inline(always)]
-#[allow(clippy::too_many_arguments)]
-fn row_group<E: SimdFloat, S: Simd, const R: usize>(
-    s: S,
+/// Packs `b` for the micro-kernel. For each depth block `k0..k0 + kc` and
+/// each panel `q` of `nr` rows there is one contiguous `kc × nr` slab with
+/// `slab[p * nr + c] = b[q * nr + c][k0 + p]` (zero for padding rows). The
+/// slab starts at `k0 · panels · nr + q · kc · nr`.
+fn pack_b<E: SimdFloat>(b: &[&[E]], nr: usize, d: usize) -> Vec<E> {
+    let panels = b.len().div_ceil(nr);
+    let mut packed = vec![E::zero(); panels * nr * d];
+    let mut k0 = 0;
+    while k0 < d {
+        let kc = KC.min(d - k0);
+        let slabs = &mut packed[k0 * panels * nr..(k0 + kc) * panels * nr];
+        let fill = |(q, slab): (usize, &mut [E])| {
+            for c in 0..nr {
+                if let Some(row) = b.get(q * nr + c) {
+                    for (p, &x) in row[k0..k0 + kc].iter().enumerate() {
+                        slab[p * nr + c] = x;
+                    }
+                }
+            }
+        };
+        // Packing small inputs in parallel costs more than it saves.
+        #[cfg(feature = "parallel")]
+        if slabs.len() >= 1 << 18 {
+            slabs.par_chunks_mut(kc * nr).enumerate().for_each(fill);
+        } else {
+            slabs.chunks_mut(kc * nr).enumerate().for_each(fill);
+        }
+        #[cfg(not(feature = "parallel"))]
+        slabs.chunks_mut(kc * nr).enumerate().for_each(fill);
+        k0 += kc;
+    }
+    packed
+}
+
+/// One parallel task: a block of up to `8 · MR` rows of `A` against all of `B`.
+struct RowBlock<'a, 'o, 'f, E, const MR: usize, const V: usize> {
     op: TileOp,
-    a: &[&[E]],
+    a: &'a [&'a [E]],
+    /// Index of the first row of this block.
     i0: usize,
-    b: &[&[E]],
-    out: &mut [E],
-    ldo: usize,
-    upper: Option<isize>,
-) {
-    const C: usize = 4;
-    let ar: [&[E]; R] = core::array::from_fn(|r| a[r]);
-    // Skip whole column groups that lie strictly below the diagonal.
-    let start = match upper {
-        Some(diag) => (i0 as isize + diag).max(0) as usize / C * C,
-        None => 0,
-    }
-    .min(b.len());
-    let full = start + (b.len() - start) / C * C;
-    let mut j = start;
-    while j < full {
-        let br: [&[E]; C] = core::array::from_fn(|c| b[j + c]);
-        let t = micro::<E, S, R, C>(s, op, ar, br);
-        for (r, row) in t.iter().enumerate() {
-            out[(i0 + r) * ldo + j..][..C].copy_from_slice(row);
-        }
-        j += C;
-    }
-    while j < b.len() {
-        let t = micro::<E, S, R, 1>(s, op, ar, [b[j]]);
-        for (r, row) in t.iter().enumerate() {
-            out[(i0 + r) * ldo + j] = row[0];
-        }
-        j += 1;
-    }
+    packed: &'a [E],
+    n: usize,
+    /// The output rows of this block.
+    out: &'o mut [E],
+    upper: bool,
+    finish: RowFinish<'f, E>,
 }
 
-/// `R × C` tile of `op(a[r], b[c])`.
-#[inline(always)]
-fn micro<E: SimdFloat, S: Simd, const R: usize, const C: usize>(
-    s: S,
-    op: TileOp,
-    a: [&[E]; R],
-    b: [&[E]; C],
-) -> [[E; C]; R] {
-    let n = a[0].len();
-    let ah: [Split<'_, E, S>; R] = core::array::from_fn(|r| E::as_simd::<S>(&a[r][..n]));
-    let bh: [Split<'_, E, S>; C] = core::array::from_fn(|c| E::as_simd::<S>(&b[c][..n]));
-    let nv = ah[0].0.len();
-    let zero = E::v_splat(s, E::zero());
-    let mut acc = [[zero; C]; R];
+impl<E: SimdFloat, const MR: usize, const V: usize> WithSimd for RowBlock<'_, '_, '_, E, MR, V> {
+    type Output = ();
 
     #[inline(always)]
-    fn step<E: SimdFloat, S: Simd, const R: usize, const C: usize>(
-        s: S,
-        op: TileOp,
-        acc: &mut [[E::V<S>; C]; R],
-        av: [E::V<S>; R],
-        bv: [E::V<S>; C],
-    ) {
-        for r in 0..R {
-            for c in 0..C {
-                acc[r][c] = match op {
-                    TileOp::Dot => E::v_mul_add(s, av[r], bv[c], acc[r][c]),
-                    TileOp::SqDiff => {
-                        let d = E::v_sub(s, av[r], bv[c]);
-                        E::v_mul_add(s, d, d, acc[r][c])
+    fn with_simd<S: Simd>(self, s: S) -> Self::Output {
+        match self.op {
+            TileOp::Dot => self.run::<S, false>(s),
+            TileOp::SqDiff => self.run::<S, true>(s),
+        }
+    }
+}
+
+impl<E: SimdFloat, const MR: usize, const V: usize> RowBlock<'_, '_, '_, E, MR, V> {
+    #[inline(always)]
+    fn run<S: Simd, const SQ: bool>(self, s: S) {
+        let n = self.n;
+        let rows = self.out.len() / n;
+        let lanes = E::lanes::<S>();
+        let nr = V * lanes;
+        let d = self.a[0].len();
+        let panels = n.div_ceil(nr);
+        let groups = rows.div_ceil(MR);
+        let per_block = (L2_BLOCK_BYTES / (KC * nr * core::mem::size_of::<E>())).max(1);
+        let mut apack = vec![E::zero(); groups * MR * KC.min(d)];
+
+        let mut k0 = 0;
+        while k0 < d {
+            let kc = KC.min(d - k0);
+            // Pack MR-row micro-panels of A: ap[g][p * MR + r] = a[i0 + g·MR + r][k0 + p].
+            for g in 0..groups {
+                let ap = &mut apack[g * MR * kc..(g + 1) * MR * kc];
+                for r in 0..MR {
+                    let i = g * MR + r;
+                    if i < rows {
+                        for (p, &x) in self.a[self.i0 + i][k0..k0 + kc].iter().enumerate() {
+                            ap[p * MR + r] = x;
+                        }
+                    } else {
+                        (0..kc).for_each(|p| ap[p * MR + r] = E::zero());
                     }
+                }
+            }
+            let slabs = &self.packed[k0 * panels * nr..];
+            let mut qb = 0;
+            while qb < panels {
+                let qe = (qb + per_block).min(panels);
+                for g in 0..groups {
+                    let first = self.i0 + g * MR;
+                    let q_start = if self.upper { qb.max(first / nr) } else { qb };
+                    let ap = &apack[g * MR * kc..(g + 1) * MR * kc];
+                    for q in q_start..qe {
+                        let bp = E::as_simd::<S>(&slabs[q * kc * nr..(q + 1) * kc * nr]).0;
+                        let acc = micro::<E, S, MR, V, SQ>(s, ap, bp, kc);
+                        let j0 = q * nr;
+                        let w = nr.min(n - j0);
+                        for (r, accr) in acc.iter().enumerate().take(rows.saturating_sub(g * MR).min(MR)) {
+                            let row = &mut self.out[(g * MR + r) * n + j0..][..w];
+                            for (v, &x) in accr.iter().enumerate() {
+                                let start = v * lanes;
+                                if start >= w {
+                                    break;
+                                }
+                                let dst = &mut row[start..(start + lanes).min(w)];
+                                let x = if k0 == 0 { x } else { E::v_add(s, x, E::v_partial_load(s, dst)) };
+                                E::v_partial_store(s, dst, x);
+                            }
+                        }
+                    }
+                }
+                qb = qe;
+            }
+            k0 += kc;
+        }
+        for (k, row) in self.out.chunks_mut(n).enumerate() {
+            (self.finish)(self.i0 + k, row);
+        }
+    }
+}
+
+/// `MR × (V · lanes)` block of results for one packed micro-panel of `A`
+/// (`ap`, `kc × MR`) and one packed slab of `B` (`bp`, `kc × V` registers).
+#[inline(always)]
+#[allow(clippy::needless_range_loop)] // index loops keep the tile in registers
+fn micro<E: SimdFloat, S: Simd, const MR: usize, const V: usize, const SQ: bool>(
+    s: S,
+    ap: &[E],
+    bp: &[E::V<S>],
+    kc: usize,
+) -> [[E::V<S>; V]; MR] {
+    let zero = E::v_splat(s, E::zero());
+    let mut acc = [[zero; V]; MR];
+    assert!(ap.len() == kc * MR && bp.len() == kc * V);
+    for p in 0..kc {
+        // SAFETY: bounds checked by the assertion above.
+        let bv: [E::V<S>; V] = core::array::from_fn(|v| unsafe { *bp.get_unchecked(p * V + v) });
+        for r in 0..MR {
+            let av = E::v_splat(s, unsafe { *ap.get_unchecked(p * MR + r) });
+            for v in 0..V {
+                acc[r][v] = if SQ {
+                    let t = E::v_sub(s, av, bv[v]);
+                    E::v_mul_add(s, t, t, acc[r][v])
+                } else {
+                    E::v_mul_add(s, av, bv[v], acc[r][v])
                 };
             }
         }
     }
-
-    for k in 0..nv {
-        // SAFETY: every row has `nv` whole registers (all rows have length `n`).
-        let av: [E::V<S>; R] = core::array::from_fn(|r| unsafe { *ah[r].0.get_unchecked(k) });
-        let bv: [E::V<S>; C] = core::array::from_fn(|c| unsafe { *bh[c].0.get_unchecked(k) });
-        step::<E, S, R, C>(s, op, &mut acc, av, bv);
-    }
-    if !ah[0].1.is_empty() {
-        // Zero-padded tails contribute nothing to either operation.
-        let av: [E::V<S>; R] = core::array::from_fn(|r| E::v_partial_load(s, ah[r].1));
-        let bv: [E::V<S>; C] = core::array::from_fn(|c| E::v_partial_load(s, bh[c].1));
-        step::<E, S, R, C>(s, op, &mut acc, av, bv);
-    }
-    core::array::from_fn(|r| core::array::from_fn(|c| E::v_reduce_sum(s, acc[r][c])))
+    acc
 }
 
 #[cfg(test)]
@@ -181,7 +291,7 @@ mod tests {
 
     fn check<E: SimdFloat>(tol: f64) {
         let mut rng = rand::rng();
-        for &(m, n, d) in &[(1, 1, 1), (3, 5, 7), (4, 4, 16), (9, 13, 33), (6, 2, 0), (17, 11, 100)] {
+        for &(m, n, d) in &[(1, 1, 1), (3, 5, 7), (8, 16, 16), (9, 13, 33), (6, 2, 0), (70, 37, 100), (130, 3, 5), (2, 50, 300), (100, 30, 513), (1, 9, 0)] {
             let a: Vec<Vec<E>> =
                 (0..m).map(|_| (0..d).map(|_| E::from_f64_(rng.random_range(-1.0..1.0))).collect()).collect();
             let b: Vec<Vec<E>> =
@@ -191,7 +301,11 @@ mod tests {
             for op in [TileOp::Dot, TileOp::SqDiff] {
                 for_each_isa(|isa| {
                     let mut out = vec![E::nan(); m * n];
-                    tile_block(op, &ar, &br, &mut out, n, None);
+                    let calls = std::sync::atomic::AtomicUsize::new(0);
+                    all_pairs(op, &ar, &br, &mut out, false, &|_, _| {
+                        calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    });
+                    assert_eq!(calls.into_inner(), m);
                     for i in 0..m {
                         for j in 0..n {
                             let want: f64 = a[i]
@@ -203,7 +317,10 @@ mod tests {
                                 })
                                 .sum();
                             let got = out[i * n + j].to_f64_();
-                            assert!((got - want).abs() <= tol * (1.0 + want.abs()), "{isa:?} {op:?} {m}x{n}x{d} ({i},{j}): {got} vs {want}");
+                            assert!(
+                                (got - want).abs() <= tol * (1.0 + want.abs()),
+                                "{isa:?} {op:?} {m}x{n}x{d} ({i},{j}): {got} vs {want}"
+                            );
                         }
                     }
                 });
@@ -212,21 +329,21 @@ mod tests {
     }
 
     #[test]
-    fn tiles_match_naive() {
+    fn kernel_matches_naive() {
         check::<f64>(1e-12);
         check::<f32>(1e-4);
     }
 
     #[test]
-    fn upper_skips_only_lower_groups() {
-        let rows: Vec<Vec<f64>> = (0..10).map(|i| vec![i as f64; 5]).collect();
+    fn upper_computes_the_upper_triangle() {
+        let rows: Vec<Vec<f64>> = (0..150).map(|i| vec![i as f64; 5]).collect();
         let r: Vec<&[f64]> = rows.iter().map(|x| x.as_slice()).collect();
         for_each_isa(|_| {
-            let mut out = vec![f64::NAN; 100];
-            tile_block(TileOp::SqDiff, &r, &r, &mut out, 10, Some(0));
-            for i in 0..10 {
-                for j in i..10 {
-                    assert_eq!(out[i * 10 + j], 5.0 * ((i as f64 - j as f64).powi(2)));
+            let mut out = vec![f64::NAN; 150 * 150];
+            all_pairs(TileOp::SqDiff, &r, &r, &mut out, true, &|_, _| {});
+            for i in 0..150 {
+                for j in i..150 {
+                    assert_eq!(out[i * 150 + j], 5.0 * ((i as f64 - j as f64).powi(2)));
                 }
             }
         });

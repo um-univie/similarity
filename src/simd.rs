@@ -44,7 +44,7 @@ mod math;
 mod tile;
 
 pub use isa::Isa;
-pub(crate) use tile::{tile_block, TileOp};
+pub(crate) use tile::{all_pairs, TileOp};
 
 pub use element::SimdFloat;
 
