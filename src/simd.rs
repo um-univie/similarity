@@ -41,8 +41,10 @@ mod engine;
 mod isa;
 mod kernels;
 mod math;
+mod tile;
 
 pub use isa::Isa;
+pub(crate) use tile::{tile_block, TileOp};
 
 pub use element::SimdFloat;
 

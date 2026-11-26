@@ -105,6 +105,19 @@ fn bench_batch(c: &mut Criterion) {
     }
     g.finish();
 
+    let mut g = c.benchmark_group("batch_cdist");
+    g.sample_size(10);
+    for d in [32, 128, 768] {
+        let a: Vec<Vec<f32>> = (0..2000).map(|_| f32s(&vec_f64(d))).collect();
+        let b: Vec<Vec<f32>> = (0..2000).map(|_| f32s(&vec_f64(d))).collect();
+        for metric in [Metric::Cosine, Metric::Euclidean] {
+            g.bench_with_input(BenchmarkId::new(format!("{metric:?}_2000x2000"), d), &d, |bch, _| {
+                bch.iter(|| batch::cdist(black_box(&a), black_box(&b), metric).unwrap())
+            });
+        }
+    }
+    g.finish();
+
     let mut g = c.benchmark_group("batch_top_k");
     let db: Vec<Vec<f32>> = (0..100_000).map(|_| f32s(&vec_f64(64))).collect();
     let q = f32s(&vec_f64(64));

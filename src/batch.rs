@@ -207,6 +207,89 @@ where
     }
 }
 
+/// Tile operation that computes `metric` for many pairs at once, if any.
+fn tile_op(metric: Metric) -> Option<simd::TileOp> {
+    match metric {
+        Metric::Dot | Metric::Cosine | Metric::CosineDistance => Some(simd::TileOp::Dot),
+        Metric::SquaredEuclidean | Metric::Euclidean => Some(simd::TileOp::SqDiff),
+        _ => None,
+    }
+}
+
+/// Rows of `A` per parallel work item in [`blocked`].
+const ROW_BLOCK: usize = 32;
+
+/// `metric` between all rows of `a` and `b` (`a.len() × b.len()`, row
+/// major) with the register-blocked tile kernel. Rows of `b` are processed
+/// in column blocks of about 256 KiB so they stay in L2 while a row block
+/// of `a` passes over them. With `same`, only the upper triangle is
+/// computed and then mirrored, so the result is exactly symmetric.
+fn blocked<E, R1, R2>(a: &[R1], b: &[R2], metric: Metric, op: simd::TileOp, same: bool) -> Vec<E>
+where
+    E: SimdFloat,
+    R1: AsRef<[E]> + Sync,
+    R2: AsRef<[E]> + Sync,
+{
+    let (m, n) = (a.len(), b.len());
+    let mut data = vec![E::zero(); m * n];
+    if m == 0 || n == 0 {
+        return data;
+    }
+    let ar: Vec<&[E]> = a.iter().map(|r| r.as_ref()).collect();
+    let br: Vec<&[E]> = b.iter().map(|r| r.as_ref()).collect();
+    let dim = ar[0].len().max(1);
+    let col_block = (256 * 1024 / (dim * core::mem::size_of::<E>())).clamp(16, 4096) / 4 * 4;
+    let cos = matches!(metric, Metric::Cosine | Metric::CosineDistance);
+    let na = if cos { norms(a) } else { Vec::new() };
+    let nb = if cos && !same { norms(b) } else { Vec::new() };
+
+    let work = |blk: usize, chunk: &mut [E]| {
+        let g0 = blk * ROW_BLOCK;
+        let rows = &ar[g0..(g0 + ROW_BLOCK).min(m)];
+        let mut j0 = if same { g0 / 4 * 4 } else { 0 };
+        while j0 < n {
+            let j1 = (j0 + col_block).min(n);
+            let upper = if same { Some(g0 as isize - j0 as isize) } else { None };
+            simd::tile_block(op, rows, &br[j0..j1], &mut chunk[j0..], n, upper);
+            j0 = j1;
+        }
+        // Turn raw dot products / squared distances into the metric.
+        for (r, row) in chunk.chunks_mut(n).enumerate() {
+            let i = g0 + r;
+            let first = if same { i } else { 0 };
+            for (j, v) in row.iter_mut().enumerate().skip(first) {
+                *v = match metric {
+                    Metric::Euclidean => v.sqrt(),
+                    Metric::Cosine | Metric::CosineDistance => {
+                        let den = na[i] * if same { na[j] } else { nb[j] };
+                        if den == E::zero() {
+                            E::nan()
+                        } else if metric == Metric::Cosine {
+                            *v / den
+                        } else {
+                            E::one() - *v / den
+                        }
+                    }
+                    _ => *v,
+                };
+            }
+        }
+    };
+    #[cfg(feature = "parallel")]
+    data.par_chunks_mut(ROW_BLOCK * n).enumerate().for_each(|(b, c)| work(b, c));
+    #[cfg(not(feature = "parallel"))]
+    data.chunks_mut(ROW_BLOCK * n).enumerate().for_each(|(b, c)| work(b, c));
+
+    if same {
+        for i in 0..n {
+            for j in 0..i {
+                data[i * n + j] = data[j * n + i];
+            }
+        }
+    }
+    data
+}
+
 /// Full `n × n` matrix of `metric` between all rows.
 ///
 /// Only the upper triangle is computed; it is mirrored into the lower
@@ -227,6 +310,9 @@ where
 {
     check_dims(rows, None)?;
     let n = rows.len();
+    if let Some(op) = tile_op(metric) {
+        return Ok(DistanceMatrix { rows: n, cols: n, data: blocked(rows, rows, metric, op, true) });
+    }
     let f = pair_fn(rows, rows, metric, true);
     let mut data = vec![E::zero(); n * n];
 
@@ -257,6 +343,14 @@ where
 {
     check_dims(rows, None)?;
     let n = rows.len();
+    if let Some(op) = tile_op(metric) {
+        let full = blocked(rows, rows, metric, op, true);
+        let mut out = Vec::with_capacity(n * n.saturating_sub(1) / 2);
+        for i in 0..n {
+            out.extend_from_slice(&full[i * n + i + 1..(i + 1) * n]);
+        }
+        return Ok(out);
+    }
     let f = pair_fn(rows, rows, metric, true);
     let row_vals = |i: usize| (i + 1..n).map(|j| f(i, j)).collect::<Vec<_>>();
     #[cfg(feature = "parallel")]
@@ -289,6 +383,9 @@ where
         check_dims(b, None)?;
     }
     let (m, n) = (a.len(), b.len());
+    if let Some(op) = tile_op(metric) {
+        return Ok(DistanceMatrix { rows: m, cols: n, data: blocked(a, b, metric, op, false) });
+    }
     let f = pair_fn(a, b, metric, false);
     let mut data = vec![E::zero(); m * n];
     let fill_row = |i: usize, out: &mut [E]| {
@@ -435,6 +532,47 @@ pub fn rows_from_flat<E>(data: &[E], dim: usize) -> Result<Vec<&[E]>, BatchError
 mod tests {
     use super::*;
     use rand::Rng;
+
+    #[test]
+    fn blocked_metrics_match_pairwise_eval() {
+        let mut rng = rand::rng();
+        for &(m, n, d) in &[(1, 1, 3), (5, 7, 9), (33, 70, 17), (40, 3, 300), (2, 2, 0)] {
+            let a: Vec<Vec<f64>> = (0..m).map(|_| (0..d).map(|_| rng.random_range(-1.0..1.0)).collect()).collect();
+            let mut b: Vec<Vec<f64>> = (0..n).map(|_| (0..d).map(|_| rng.random_range(-1.0..1.0)).collect()).collect();
+            b[0] = vec![0.0; d]; // zero row: cosine is NaN
+            for metric in [Metric::Dot, Metric::Cosine, Metric::CosineDistance, Metric::Euclidean, Metric::SquaredEuclidean] {
+                let c = cdist(&a, &b, metric).unwrap();
+                for i in 0..m {
+                    for j in 0..n {
+                        let want = metric.eval(&a[i], &b[j]).unwrap_or(f64::NAN);
+                        let want = if matches!(metric, Metric::Cosine | Metric::CosineDistance) && j == 0 { f64::NAN } else { want };
+                        let got = c.get(i, j);
+                        assert!(
+                            (got.is_nan() && want.is_nan()) || (got - want).abs() < 1e-10,
+                            "{metric:?} {m}x{n}x{d} ({i},{j}): {got} vs {want}"
+                        );
+                    }
+                }
+                let p = pairwise(&b, metric).unwrap();
+                let condensed = pdist(&b, metric).unwrap();
+                let mut k = 0;
+                for i in 0..n {
+                    for j in 0..n {
+                        let (x, y) = (p.get(i, j), p.get(j, i));
+                        assert!(x.to_bits() == y.to_bits(), "pairwise not symmetric");
+                        let want = metric.eval(&b[i], &b[j]).unwrap_or(f64::NAN);
+                        let want = if matches!(metric, Metric::Cosine | Metric::CosineDistance) && (i == 0 || j == 0) { f64::NAN } else { want };
+                        assert!((x.is_nan() && want.is_nan()) || (x - want).abs() < 1e-10, "{metric:?} pairwise ({i},{j}): {x} vs {want}");
+                        if j > i {
+                            assert!(condensed[k].to_bits() == x.to_bits());
+                            k += 1;
+                        }
+                    }
+                }
+                assert_eq!(k, condensed.len());
+            }
+        }
+    }
 
     fn rows(n: usize, d: usize) -> Vec<Vec<f64>> {
         let mut rng = rand::rng();
