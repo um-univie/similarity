@@ -1,0 +1,19 @@
+[package]
+name = "gemm-compare"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Compares similarity's all-pairs kernel with the gemm and matrixmultiply crates"
+
+[dependencies]
+similarity = { path = "../.." }
+gemm = "0.19"
+matrixmultiply = { version = "0.3", features = ["threading"] }
+rand = "0.9"
+
+[features]
+avx512 = ["similarity/avx512"]
+
+[profile.release]
+lto = true
+codegen-units = 1

@@ -84,3 +84,35 @@ jobs:
       - run: uv run --no-project maturin develop --release
       - run: uv run --no-project pytest -q tests
       - run: cargo clippy -- -D warnings
+
+  # Times the all-pairs kernel against the gemm and matrixmultiply crates on
+  # x86 runners. Results go to the job summary; nothing fails on speed.
+  bench-x86:
+    name: bench x86 (${{ matrix.build }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [avx2, avx512]
+    defaults:
+      run:
+        working-directory: benchmarks/gemm-compare
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/gemm-compare
+      - name: CPU
+        run: |
+          {
+            echo "### ${{ matrix.build }} build"
+            echo
+            echo "CPU: $(lscpu | sed -n 's/^Model name: *//p'), AVX-512F: $(grep -q avx512f /proc/cpuinfo && echo yes || echo no)"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Benchmark
+        run: |
+          FEATURES=""
+          if [ "${{ matrix.build }}" = "avx512" ]; then FEATURES="--features avx512"; fi
+          cargo run --release $FEATURES | tee -a "$GITHUB_STEP_SUMMARY"
