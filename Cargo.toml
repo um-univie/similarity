@@ -1,12 +1,12 @@
 [package]
 name = "similarity"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 # The optional `avx512` feature needs Rust >= 1.89.
 rust-version = "1.83"
 license = "MIT"
 repository = "https://github.com/um-univie/similarity"
-description = "A comprehensive Rust library for calculating similarity metrics between vectors, collections, and spectral data with both functional and trait-based APIs"
+description = "Similarity, distance and divergence metrics for vectors, sets and mass spectra, with SIMD and fast spectral library search"
 readme = "README.md"
 keywords = ["similarity", "distance", "correlation", "entropy", "statistics"]
 categories = ["science", "algorithms", "mathematics"]
@@ -28,6 +28,7 @@ bytemuck = "1"
 [dev-dependencies]
 criterion = "0.6.0"
 approx = "0.5"
+proptest = "1.9.0"
 
 [features]
 default = ["parallel", "fft"]
