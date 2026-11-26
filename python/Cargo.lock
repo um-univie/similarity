@@ -397,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "similarity"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytemuck",
  "num-traits",
@@ -409,7 +409,7 @@ dependencies = [
 
 [[package]]
 name = "similarity-py"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "numpy",
  "pyo3",
