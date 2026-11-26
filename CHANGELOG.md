@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [0.3.0] - unreleased
+## [0.3.0] - 2026-11-26
 
 ### Added
 - Portable SIMD (pulp 0.22) for `f32` and `f64` with runtime dispatch
