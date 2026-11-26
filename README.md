@@ -10,7 +10,7 @@ A Rust library for computing similarity, distance and divergence metrics between
 ## Features
 
 - **Portable SIMD for `f32` and `f64`**: Over 40 kernels built on [`pulp`](https://crates.io/crates/pulp). The library detects AVX-512, AVX2 or NEON at runtime and uses the fastest one available.
-- **Batch evaluation**: Compute pairwise and cross-distance matrices (`pairwise`, `pdist`, `cdist`) or find the k nearest neighbours (`top_k`). Dot product, cosine and Euclidean matrices use a register-blocked kernel that works on 4×4 tiles of rows at once, which makes them 2 to 3 times faster than computing each pair on its own. Rows are processed in parallel with Rayon.
+- **Batch evaluation**: Compute pairwise and cross-distance matrices (`pairwise`, `pdist`, `cdist`) or find the k nearest neighbours (`top_k`). Dot product, cosine and Euclidean matrices use a GEMM-style kernel with packed, cache-blocked operands that runs about as fast as the `gemm` crate. On macOS, dot product and cosine matrices go through Apple's Accelerate framework, which is another 3 to 4 times faster on Apple silicon.
 - **Sparse vectors**: `SparseVector` stores only the non-zero entries, so pairwise metrics take time proportional to the number of non-zeros. `SparseIndex` builds an inverted index for searching large collections of fingerprints, word counts or binned spectra.
 - **Many metrics**: Minkowski family, Canberra, Bray–Curtis, χ², Tanimoto, Dice, Ruzicka, Hamming (including bit fingerprints), Levenshtein, LCS, DTW, KL, JS, Rényi, Hellinger, Bhattacharyya, Wasserstein, Spearman, Kendall τ-b, Lin's CCC, MAE, MSE, RMSE, MAPE, sMAPE and R².
 - **Mass spectrometry**: Match peaks within a Da or ppm tolerance and score spectra with the modified cosine or the entropy similarity.
@@ -225,12 +225,13 @@ See [`python/README.md`](python/README.md).
 
 ```toml
 [dependencies]
-similarity = { version = "0.4", features = ["parallel", "fft"] }
+similarity = { version = "0.4", features = ["parallel", "fft", "accelerate"] }
 ```
 
 - **`parallel`**: Enables Rayon-based parallel processing for large datasets
 - **`fft`**: Enables FFT-based optimizations for cross-correlation and convolution
 - **`avx512`** (off by default): compiles AVX-512 kernels, used at runtime when the CPU supports them. Needs Rust ≥ 1.89.
+- **`accelerate`** (on by default): uses Apple's Accelerate framework for dense dot product and cosine matrices on macOS. It has no effect on other platforms. `similarity::batch::dense_backend()` reports which backend is in use.
 
 Minimum supported Rust version: **1.83**.
 

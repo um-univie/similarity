@@ -14,10 +14,17 @@ All notable changes to this project are documented here. The format follows
   results, tiled against per-pair `cdist`, sparse against dense, and Flash
   entropy against `SpectralLibrary`.
 
+- `accelerate` feature (on by default): dense dot product and cosine
+  matrices use Apple's Accelerate framework on macOS. No effect elsewhere.
+  `batch::dense_backend()` reports the backend in use.
+- `benchmarks/gemm-compare` and a CI job that times the dense kernel against
+  the `gemm` and `matrixmultiply` crates on x86.
+
 ### Changed
 - `cdist`, `pairwise`, `pdist` and `top_k_many` compute dot product, cosine
-  and Euclidean metrics with a register-blocked tile kernel, 2 to 3 times
-  faster on large inputs. `pairwise` results are now exactly symmetric.
+  and Euclidean metrics with a GEMM-style kernel (packed operands, depth and
+  column blocking), 2 to 4 times faster than before on large inputs.
+  `pairwise` results are now exactly symmetric.
 - Reworded the crate description and the README introduction.
 
 ## [0.3.0] - 2026-11-26
