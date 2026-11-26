@@ -1,0 +1,25 @@
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "similarity-rs"
+version = "0.3.0"
+description = "SIMD-accelerated similarity metrics and spectral library search (Rust)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.21"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Scientific/Engineering :: Chemistry",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "similarity_rs._core"
+features = ["pyo3/extension-module"]

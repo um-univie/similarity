@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Every SIMD test runs once per instruction set the runner supports
+  # (scalar fallback, AVX2, AVX-512 when built with `avx512`, NEON).
+  test:
+    name: test (${{ matrix.os }}, ${{ matrix.features }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+        features: ["", "--no-default-features", "--features avx512"]
+        exclude:
+          # AVX-512 is x86-only
+          - os: ubuntu-24.04-arm
+            features: "--features avx512"
+          - os: macos-latest
+            features: "--features avx512"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Report CPU and detected ISAs
+        run: cargo test --lib ${{ matrix.features }} report_isas -- --nocapture
+      - name: Test
+        run: cargo test ${{ matrix.features }}
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.83
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --lib
+      - run: cargo check --lib --no-default-features
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - run: cargo bench --no-run --all-features
+
+  python:
+    name: python (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: python
+      - uses: astral-sh/setup-uv@v6
+      - run: uv venv --python 3.12
+      - run: uv pip install maturin numpy pytest
+      - run: uv run --no-project maturin develop --release
+      - run: uv run --no-project pytest -q tests
+      - run: cargo clippy -- -D warnings

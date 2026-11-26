@@ -138,17 +138,21 @@ fn main() {
         let large_vec_a: Vec<f64> = (0..10000).map(|i| i as f64).collect();
         let large_vec_b: Vec<f64> = (0..10000).map(|i| (i as f64) * 1.1).collect();
 
-        // Regular vs parallel implementations
+        // Regular vs SIMD vs parallel implementations
         let cosine_regular = CosineSimilarity::similarity((&large_vec_a, &large_vec_b));
+        let cosine_simd = CosineSimilarityOptimized::similarity((&large_vec_a, &large_vec_b));
         let cosine_parallel = CosineSimilarityParallel::similarity((&large_vec_a, &large_vec_b));
 
-        println!("Cosine similarity (regular): {:?}", cosine_regular);
-        println!("Cosine similarity (parallel): {:?}", cosine_parallel);
+        println!("Cosine similarity (regular):  {:?}", cosine_regular);
+        println!("Cosine similarity (SIMD pulp): {:?}", cosine_simd);
+        println!("Cosine similarity (parallel):  {:?}", cosine_parallel);
 
-        // Both should give same or very similar results
-        if let (Some(regular), Some(parallel)) = (cosine_regular, cosine_parallel) {
-            let diff = (regular - parallel).abs();
-            println!("Difference regular vs parallel: {:.10}", diff);
+        // All should give same or very similar results
+        if let (Some(regular), Some(simd), Some(parallel)) = (cosine_regular, cosine_simd, cosine_parallel) {
+            let diff_simd = (regular - simd).abs();
+            let diff_par = (regular - parallel).abs();
+            println!("Difference regular vs SIMD:     {:.10}", diff_simd);
+            println!("Difference regular vs parallel: {:.10}", diff_par);
         }
 
         println!();

@@ -8,8 +8,8 @@ use std::collections::HashSet;
 use std::time::Duration;
 use rand::prelude::*;
 
-/// This benchmark suite specifically proves that trait-based APIs have zero-cost abstractions
-/// by directly comparing identical operations through both functional and trait interfaces.
+// This benchmark suite specifically proves that trait-based APIs have zero-cost abstractions
+// by directly comparing identical operations through both functional and trait interfaces.
 
 // ============================================================================
 // ZERO-COST ABSTRACTION TEST DATA

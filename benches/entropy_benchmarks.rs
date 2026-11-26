@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
 use similarity::*;
 use similarity::entropy_traits::*;

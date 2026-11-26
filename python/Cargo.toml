@@ -1,0 +1,24 @@
+[package]
+name = "similarity-py"
+version = "0.3.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Python bindings for the similarity crate"
+
+[lib]
+name = "_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+similarity = { path = ".." }
+pyo3 = { version = "0.30", features = ["extension-module", "abi3-py39"] }
+numpy = "0.30"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+# Release builds carry no debuginfo anyway; running `strip` on the
+# extension produced dylibs that dyld rejects on some macOS toolchains.
+strip = false
