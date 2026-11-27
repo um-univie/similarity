@@ -6,6 +6,7 @@ use rayon::prelude::*;
 const WEIGHT_START: f64 = 0.25;
 const ENTROPY_CUTOFF: f64 = 3.0;
 const WEIGHT_SLOPE: f64 = (1.0 - WEIGHT_START) / ENTROPY_CUTOFF;
+#[cfg(feature = "parallel")]
 const BLOCK_SIZE: usize = 64; // Cache-friendly block size
 
 /// Represents a spectral peak with mass-to-charge ratio and intensity

@@ -11,6 +11,7 @@ rng = np.random.default_rng(0)
 def test_isa_and_version():
     assert sr.isa() in {"Scalar", "Avx2", "Avx512", "Neon"}
     assert sr.__version__
+    assert sr.dense_backend() in {"accelerate", "simd"}
 
 
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])

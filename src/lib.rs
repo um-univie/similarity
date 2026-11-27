@@ -14,6 +14,9 @@ pub mod statistics;
 pub mod set_metrics;
 pub mod flash_entropy;
 pub mod library_search;
+pub mod sparse;
+#[cfg(all(feature = "accelerate", feature = "parallel", target_os = "macos"))]
+mod accelerate;
 
 // New trait system with semantic separation
 pub mod traits;

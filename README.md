@@ -5,18 +5,19 @@
 [![CI](https://github.com/um-univie/similarity/actions/workflows/ci.yml/badge.svg)](https://github.com/um-univie/similarity/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A comprehensive Rust library for calculating similarity metrics between vectors, collections, and spectral data. Features both functional and trait-based APIs with optional parallel processing and FFT optimizations.
+A Rust library for computing similarity, distance and divergence metrics between vectors, sets, probability distributions and mass spectra. It uses SIMD on x86 and ARM and can spread batch work across all CPU cores.
 
 ## Features
 
-- **Portable SIMD for `f32` and `f64`**: 40+ kernels powered by [`pulp`](https://crates.io/crates/pulp) with runtime CPU dispatch (AVX-512, AVX2+FMA, NEON), 4–8 independent accumulators, fused multiply-add, single-pass multi-sum reductions and vectorised tails
-- **Batch evaluation**: pairwise matrices (`pairwise`, `pdist`), cross-distance (`cdist`) and k-nearest-neighbour search (`top_k`), SIMD inside and Rayon across rows
-- **Many metrics**: Minkowski family, Canberra, Bray–Curtis, χ², Tanimoto, Dice, Ruzicka, Hamming (incl. bit fingerprints), Levenshtein, LCS, DTW, KL / JS / Rényi / Hellinger / Bhattacharyya / Wasserstein, Spearman, Kendall τ-b, Lin's CCC, MAE / MSE / RMSE / MAPE / sMAPE / R²
-- **Mass spectrometry**: m/z-tolerant (Da or ppm) greedy peak matching, modified spectral cosine and peak-matched entropy similarity
-- **Flash entropy search**: indexed library search with the spectral entropy similarity (Li & Fiehn 2023): ~2000× faster than brute force on a 100k-spectrum library, exact on cleaned spectra
-- **Batch library search**: precursor-filtered identity search with entropy or modified-cosine scoring, min-peaks / min-score thresholds, top-k, all-vs-all similarity matrices (molecular networking)
-- **Python bindings** (`python/`, PyO3 + NumPy): vector metrics, `cdist` / `pdist` / `top_k`, divergences, Flash entropy and library search, GIL released
-- **Vectorised `ln` / `exp` / `pow` / `sqrt`** (≤ 2 ulp): SIMD Shannon entropy, KL, cross-entropy, Jensen–Shannon, Bhattacharyya, Hellinger and spectral entropy weighting
+- **Portable SIMD for `f32` and `f64`**: Over 40 kernels built on [`pulp`](https://crates.io/crates/pulp). The library detects AVX-512, AVX2 or NEON at runtime and uses the fastest one available.
+- **Batch evaluation**: Compute pairwise and cross-distance matrices (`pairwise`, `pdist`, `cdist`) or find the k nearest neighbours (`top_k`). Dot product, cosine and Euclidean matrices use a GEMM-style kernel with packed, cache-blocked operands that runs about as fast as the `gemm` crate. On macOS, dot product and cosine matrices go through Apple's Accelerate framework, which is another 3 to 4 times faster on Apple silicon.
+- **Sparse vectors**: `SparseVector` stores only the non-zero entries, so pairwise metrics take time proportional to the number of non-zeros. `SparseIndex` builds an inverted index for searching large collections of fingerprints, word counts or binned spectra.
+- **Many metrics**: Minkowski family, Canberra, Bray–Curtis, χ², Tanimoto, Dice, Ruzicka, Hamming (including bit fingerprints), Levenshtein, LCS, DTW, KL, JS, Rényi, Hellinger, Bhattacharyya, Wasserstein, Spearman, Kendall τ-b, Lin's CCC, MAE, MSE, RMSE, MAPE, sMAPE and R².
+- **Mass spectrometry**: Match peaks within a Da or ppm tolerance and score spectra with the modified cosine or the entropy similarity.
+- **Flash entropy search**: Indexed library search with the spectral entropy similarity (Li & Fiehn 2023). On a library of 100,000 spectra it is over 2000 times faster than brute force and gives the same scores.
+- **Batch library search**: Search a library with entropy or cosine scoring, filter candidates by precursor m/z, set minimum peak and score thresholds, and build all-vs-all similarity matrices for molecular networking.
+- **Python bindings**: The `python/` directory contains PyO3 bindings that take NumPy arrays and release the GIL while they compute.
+- **Vectorised `ln`, `exp`, `pow` and `sqrt`**: Accurate to within 2 ulp. They power the SIMD versions of Shannon entropy, KL divergence, cross-entropy, Jensen–Shannon, Bhattacharyya, Hellinger and spectral entropy weighting.
 - **Semantically Correct Trait System**: Separate traits for different types of calculations
 - **Zero-Cost Abstractions**: Trait calls compile to direct function calls
 - **Extensive Metric Coverage**: Distance, similarity, correlation, and entropy measures  
@@ -55,7 +56,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-similarity = "0.3.0"
+similarity = "0.3"
 ```
 
 ### Trait-Based API Examples
@@ -143,6 +144,17 @@ let dm   = pairwise(&db[..1000], Metric::Euclidean)?;
 println!("{}", dm.get(3, 7));
 ```
 
+### Sparse vectors
+
+```rust
+use similarity::sparse::{SparseIndex, SparseMetric, SparseVector};
+
+let fp = SparseVector::<f32>::binary(vec![3, 17, 256, 1024])?;    // on-bits of a fingerprint
+let counts = SparseVector::from_pairs(vec![(7, 2.0), (3, 1.0)]);   // any order, duplicates are summed
+let index = SparseIndex::new(&library);
+let hits = index.top_k(&fp, 10, SparseMetric::Tanimoto);
+```
+
 ### Spectral library matching with m/z tolerance
 
 ```rust
@@ -213,14 +225,15 @@ See [`python/README.md`](python/README.md).
 
 ```toml
 [dependencies]
-similarity = { version = "0.3.0", features = ["parallel", "fft"] }
+similarity = { version = "0.3", features = ["parallel", "fft", "accelerate", "avx512"] }
 ```
 
 - **`parallel`**: Enables Rayon-based parallel processing for large datasets
 - **`fft`**: Enables FFT-based optimizations for cross-correlation and convolution
-- **`avx512`** (off by default): compiles AVX-512 kernels, used at runtime when the CPU supports them. Needs Rust ≥ 1.89.
+- **`avx512`** (on by default): compiles AVX-512 kernels for x86-64, used at runtime when the CPU supports them. Other CPUs use AVX2 or scalar code.
+- **`accelerate`** (on by default): uses Apple's Accelerate framework for dense dot product and cosine matrices on macOS. Accelerate runs on several threads, so it is only used when `parallel` is also on; without `parallel` nothing starts threads. It has no effect on other platforms. `similarity::batch::dense_backend()` reports which backend is in use.
 
-Minimum supported Rust version: **1.83**.
+Minimum supported Rust version: **1.89**.
 
 `similarity::simd::Isa::detected()` reports which instruction set the SIMD kernels use on the current machine.
 

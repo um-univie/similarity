@@ -12,7 +12,7 @@ env:
 
 jobs:
   # Every SIMD test runs once per instruction set the runner supports
-  # (scalar fallback, AVX2, AVX-512 when built with `avx512`, NEON).
+  # (scalar fallback, AVX2, AVX-512 on CPUs that have it, NEON).
   test:
     name: test (${{ matrix.os }}, ${{ matrix.features }})
     runs-on: ${{ matrix.os }}
@@ -20,13 +20,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
-        features: ["", "--no-default-features", "--features avx512"]
-        exclude:
-          # AVX-512 is x86-only
-          - os: ubuntu-24.04-arm
-            features: "--features avx512"
-          - os: macos-latest
-            features: "--features avx512"
+        features: ["", "--no-default-features"]
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -40,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.83
+      - uses: dtolnay/rust-toolchain@1.89
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --lib
       - run: cargo check --lib --no-default-features
@@ -84,3 +78,42 @@ jobs:
       - run: uv run --no-project maturin develop --release
       - run: uv run --no-project pytest -q tests
       - run: cargo clippy -- -D warnings
+
+  # Times the all-pairs kernel against the gemm and matrixmultiply crates on
+  # x86 runners. Results go to the job summary; nothing fails on speed.
+  bench-x86:
+    name: bench x86 (${{ matrix.build }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [avx2, avx512]
+    defaults:
+      run:
+        working-directory: benchmarks/gemm-compare
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benchmarks/gemm-compare
+      - name: CPU
+        run: |
+          {
+            echo "### ${{ matrix.build }} build"
+            echo
+            echo "CPU: $(lscpu | sed -n 's/^Model name: *//p'), AVX-512F: $(grep -q avx512f /proc/cpuinfo && echo yes || echo no)"
+            echo
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          # Which CPU a runner gets is luck; say so when the AVX-512 build
+          # lands on one without AVX-512 (it then measures AVX2).
+          if [ "${{ matrix.build }}" = "avx512" ] && ! grep -q avx512f /proc/cpuinfo; then
+            echo "::warning title=No AVX-512::This runner has no AVX-512, so the avx512 build measures AVX2 kernels."
+            echo "> **Note:** no AVX-512 on this runner; the numbers below are AVX2." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Benchmark
+        run: |
+          # The avx2 build leaves out similarity's AVX-512 kernels.
+          FEATURES=""
+          if [ "${{ matrix.build }}" = "avx2" ]; then FEATURES="--no-default-features"; fi
+          cargo run --release $FEATURES | tee -a "$GITHUB_STEP_SUMMARY"

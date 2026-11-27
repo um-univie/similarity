@@ -4,6 +4,44 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-11-27
+
+### Added
+- `sparse` module: `SparseVector` with dot, cosine, Euclidean, Manhattan,
+  Jaccard, Tanimoto and Ruzicka; `SparseIndex` (inverted index) with
+  `scores`, `top_k` and `top_k_many`; `sparse_cdist`.
+- Property-based tests (proptest) for metric axioms, SIMD against scalar
+  results, tiled against per-pair `cdist`, sparse against dense, and Flash
+  entropy against `SpectralLibrary`.
+- `accelerate` feature (on by default): dense dot product and cosine
+  matrices use Apple's Accelerate framework on macOS (only together with
+  `parallel`, since Accelerate starts its own threads). No effect
+  elsewhere. `batch::dense_backend()` reports the backend in use.
+- `batch::cdist_into`, `batch::pairwise_into` and `batch::pdist_into` write
+  into a caller-provided buffer, so repeated calls can reuse one allocation.
+- `benchmarks/gemm-compare` and a CI job that times the dense kernel against
+  the `gemm` and `matrixmultiply` crates on x86.
+
+### Changed
+- **Minimum supported Rust version is now 1.89** (was 1.83), needed for
+  the AVX-512 intrinsics.
+- The `avx512` feature is now on by default, so AVX-512 CPUs use AVX-512
+  kernels without extra configuration.
+- `cdist`, `pairwise`, `pdist` and `top_k_many` compute dot product, cosine
+  and Euclidean metrics with a GEMM-style kernel (packed operands, depth and
+  column blocking), 2 to 4 times faster than before on large inputs.
+  `pairwise` results are now exactly symmetric. Dot product and cosine
+  results can differ from 0.3.0 in the last bits (different summation
+  order).
+- `pairwise` and `pdist` compute only the upper triangle (like BLAS SYRK,
+  on Accelerate through `ssyrk`/`dsyrk`), about 2 times faster than
+  `cdist(a, a)` for long vectors. `pdist` writes the condensed result
+  directly, without an `n × n` intermediate (half the memory, and up to
+  2 times faster for short vectors).
+- Accelerate calls are split into blocks of 2048 rows; a single call on
+  large outputs with short vectors was up to 10 times slower.
+- Reworded the crate description and the README introduction.
+
 ## [0.3.0] - 2026-11-26
 
 ### Added

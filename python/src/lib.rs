@@ -114,6 +114,12 @@ fn isa() -> String {
     format!("{:?}", Isa::detected())
 }
 
+/// Backend for dense dot product and cosine matrices ("accelerate" or "simd").
+#[pyfunction]
+fn dense_backend() -> &'static str {
+    batch::dense_backend()
+}
+
 /// Metric between two 1-D arrays of the same dtype (float32/float64).
 /// Returns ``nan`` if undefined (e.g. cosine of a zero vector).
 #[pyfunction]
@@ -457,6 +463,7 @@ impl SpectralLibrary {
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_function(wrap_pyfunction!(isa, m)?)?;
+    m.add_function(wrap_pyfunction!(dense_backend, m)?)?;
     m.add_function(wrap_pyfunction!(distance, m)?)?;
     m.add_function(wrap_pyfunction!(cdist, m)?)?;
     m.add_function(wrap_pyfunction!(pdist, m)?)?;
