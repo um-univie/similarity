@@ -3,8 +3,8 @@
 //! tables in GFLOP/s. The symmetric table compares similarity's `pairwise`
 //! with faer's triangular product (both compute one triangle, like BLAS
 //! SYRK); its rate counts the full `2·n²·d` operations, so it can exceed the
-//! machine's peak. Run with `cargo run --release` (add `--features avx512`
-//! to enable similarity's AVX-512 kernels). All libraries write into output
+//! machine's peak. Run with `cargo run --release` (`--no-default-features`
+//! leaves out similarity's AVX-512 kernels and Accelerate). All libraries write into output
 //! buffers allocated before timing starts.
 
 use faer::linalg::matmul::triangular::{self, BlockStructure};

@@ -225,15 +225,15 @@ See [`python/README.md`](python/README.md).
 
 ```toml
 [dependencies]
-similarity = { version = "0.4", features = ["parallel", "fft", "accelerate"] }
+similarity = { version = "0.4", features = ["parallel", "fft", "accelerate", "avx512"] }
 ```
 
 - **`parallel`**: Enables Rayon-based parallel processing for large datasets
 - **`fft`**: Enables FFT-based optimizations for cross-correlation and convolution
-- **`avx512`** (off by default): compiles AVX-512 kernels, used at runtime when the CPU supports them. Needs Rust ≥ 1.89.
+- **`avx512`** (on by default): compiles AVX-512 kernels for x86-64, used at runtime when the CPU supports them. Other CPUs use AVX2 or scalar code.
 - **`accelerate`** (on by default): uses Apple's Accelerate framework for dense dot product and cosine matrices on macOS. Accelerate runs on several threads, so it is only used when `parallel` is also on; without `parallel` nothing starts threads. It has no effect on other platforms. `similarity::batch::dense_backend()` reports which backend is in use.
 
-Minimum supported Rust version: **1.83**.
+Minimum supported Rust version: **1.89**.
 
 `similarity::simd::Isa::detected()` reports which instruction set the SIMD kernels use on the current machine.
 

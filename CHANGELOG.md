@@ -24,6 +24,9 @@ All notable changes to this project are documented here. The format follows
   the `gemm` and `matrixmultiply` crates on x86.
 
 ### Changed
+- The `avx512` feature is now on by default, so AVX-512 CPUs use AVX-512
+  kernels without extra configuration. Minimum supported Rust version is
+  now 1.89.
 - `cdist`, `pairwise`, `pdist` and `top_k_many` compute dot product, cosine
   and Euclidean metrics with a GEMM-style kernel (packed operands, depth and
   column blocking), 2 to 4 times faster than before on large inputs.

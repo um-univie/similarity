@@ -2,8 +2,7 @@
 name = "similarity"
 version = "0.4.0"
 edition = "2021"
-# The optional `avx512` feature needs Rust >= 1.89.
-rust-version = "1.83"
+rust-version = "1.89"
 license = "MIT"
 repository = "https://github.com/um-univie/similarity"
 description = "Similarity, distance and divergence metrics for vectors, sets and mass spectra, with SIMD and fast spectral library search"
@@ -31,10 +30,11 @@ approx = "0.5"
 proptest = "1.9.0"
 
 [features]
-default = ["parallel", "fft", "accelerate"]
+default = ["parallel", "fft", "accelerate", "avx512"]
 parallel = ["rayon"]
 fft = ["rustfft"]
-# Enables AVX-512 kernels on x86-64 CPUs that support them (runtime-detected).
+# Compiles AVX-512 kernels for x86-64, used at runtime on CPUs that support
+# them (other CPUs fall back to AVX2 or scalar code).
 avx512 = ["pulp/x86-v4"]
 # Uses Apple's Accelerate framework for dense dot-product and cosine
 # matrices on macOS. Accelerate runs on several threads, so it is used only

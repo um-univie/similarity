@@ -6,14 +6,16 @@ publish = false
 description = "Compares similarity's all-pairs kernels with faer, gemm and matrixmultiply"
 
 [dependencies]
-similarity = { path = "../.." }
+similarity = { path = "../..", default-features = false, features = ["parallel"] }
 gemm = "0.19"
 matrixmultiply = { version = "0.3", features = ["threading"] }
 rand = "0.9"
 faer = "0.24"
 
 [features]
+default = ["avx512", "accelerate"]
 avx512 = ["similarity/avx512"]
+accelerate = ["similarity/accelerate"]
 
 [profile.release]
 lto = true
