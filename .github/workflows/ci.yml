@@ -110,7 +110,7 @@ jobs:
             echo
             echo "CPU: $(lscpu | sed -n 's/^Model name: *//p'), AVX-512F: $(grep -q avx512f /proc/cpuinfo && echo yes || echo no)"
             echo
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Benchmark
         run: |
           FEATURES=""

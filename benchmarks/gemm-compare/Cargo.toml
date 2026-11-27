@@ -3,13 +3,14 @@ name = "gemm-compare"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Compares similarity's all-pairs kernel with the gemm and matrixmultiply crates"
+description = "Compares similarity's all-pairs kernels with faer, gemm and matrixmultiply"
 
 [dependencies]
 similarity = { path = "../.." }
 gemm = "0.19"
 matrixmultiply = { version = "0.3", features = ["threading"] }
 rand = "0.9"
+faer = "0.24"
 
 [features]
 avx512 = ["similarity/avx512"]
