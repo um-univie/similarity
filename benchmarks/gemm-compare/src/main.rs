@@ -4,12 +4,13 @@
 //! with faer's triangular product (both compute one triangle, like BLAS
 //! SYRK); its rate counts the full `2·n²·d` operations, so it can exceed the
 //! machine's peak. Run with `cargo run --release` (add `--features avx512`
-//! to enable similarity's AVX-512 kernels).
+//! to enable similarity's AVX-512 kernels). All libraries write into output
+//! buffers allocated before timing starts.
 
 use faer::linalg::matmul::triangular::{self, BlockStructure};
 use faer::{linalg::matmul, Accum, Mat, MatRef, Par};
 use rand::Rng;
-use similarity::batch::{cdist, dense_backend, pairwise, Metric};
+use similarity::batch::{cdist_into, dense_backend, pairwise_into, Metric};
 use similarity::simd::Isa;
 use std::time::Instant;
 
@@ -53,10 +54,12 @@ fn main() {
             let fa = MatRef::from_row_major_slice(&a, n, d);
             let gflops = |t: f64| format!("{:.0}", 2.0 * (n * n * d) as f64 / t / 1e9);
 
-            let mut ours = Vec::new();
-            let t_ours = best(|| ours = cdist(&rows, &rows, Metric::Dot).unwrap().data);
-            let t_euc = best(|| drop(cdist(&rows, &rows, Metric::Euclidean).unwrap()));
-            let t_pair = best(|| drop(pairwise(&rows, Metric::Dot).unwrap()));
+            // Every library writes into a buffer allocated outside the timer.
+            let mut ours = vec![0f32; n * n];
+            let mut scratch = vec![0f32; n * n];
+            let t_euc = best(|| cdist_into(&rows, &rows, Metric::Euclidean, &mut scratch).unwrap());
+            let t_pair = best(|| pairwise_into(&rows, Metric::Dot, &mut scratch).unwrap());
+            let t_ours = best(|| cdist_into(&rows, &rows, Metric::Dot, &mut ours).unwrap());
 
             let mut f = Mat::<f32>::zeros(n, n);
             let t_faer = best(|| matmul::matmul(f.as_mut(), Accum::Replace, fa, fa.transpose(), 1.0, Par::rayon(0)));
