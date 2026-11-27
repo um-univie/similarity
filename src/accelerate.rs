@@ -150,3 +150,46 @@ pub(crate) fn syrk_aat<E: SimdFloat>(a: &[&[E]], out: &mut [E]) -> bool {
     }
     true
 }
+
+/// Strict upper triangle of `A · Aᵀ` in the condensed `pdist` layout
+/// (length `n(n−1)/2`). Each block of rows is computed like in
+/// [`syrk_aat`] into a scratch buffer of `ROW_BLOCK × n` and then copied,
+/// so no `n × n` buffer is needed. Returns `false` (and leaves `out`
+/// untouched) if the shapes do not fit the BLAS interface.
+pub(crate) fn syrk_condensed<E: SimdFloat>(a: &[&[E]], out: &mut [E]) -> bool {
+    let n = a.len();
+    if !is_blas_float::<E>() || n < 2 || out.len() != n * (n - 1) / 2 {
+        return false;
+    }
+    let d = a[0].len();
+    let fits = |x: usize| i32::try_from(x).is_ok();
+    if d == 0 || !fits(n) || !fits(d) || !fits(ROW_BLOCK * n) {
+        return false;
+    }
+    let mut buf = Vec::new();
+    let pa = matrix(a, d, &mut buf);
+    let mut scratch = vec![E::zero(); ROW_BLOCK.min(n) * n];
+    let mut dst = out;
+    for i0 in (0..n).step_by(ROW_BLOCK) {
+        let rows = ROW_BLOCK.min(n - i0);
+        let ld = n - i0;
+        // SAFETY: `pa` points to n × d valid elements; the scratch block is
+        // `rows × ld` (≤ ROW_BLOCK × n) with the diagonal block at 0 and the
+        // block right of it at column `rows`. The element type was checked.
+        unsafe {
+            let c = scratch.as_mut_ptr();
+            syrk(rows, d, pa.add(i0 * d), c, ld);
+            if ld > rows {
+                gemm(rows, ld - rows, d, pa.add(i0 * d), pa.add((i0 + rows) * d), c.add(rows), ld);
+            }
+        }
+        for r in 0..rows {
+            // Row i0 + r, columns i0 + r + 1 .. n.
+            let src = &scratch[r * ld + r + 1..(r + 1) * ld];
+            let (head, tail) = core::mem::take(&mut dst).split_at_mut(src.len());
+            head.copy_from_slice(src);
+            dst = tail;
+        }
+    }
+    true
+}

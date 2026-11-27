@@ -18,8 +18,8 @@ All notable changes to this project are documented here. The format follows
   matrices use Apple's Accelerate framework on macOS (only together with
   `parallel`, since Accelerate starts its own threads). No effect
   elsewhere. `batch::dense_backend()` reports the backend in use.
-- `batch::cdist_into` and `batch::pairwise_into` write into a caller-provided
-  buffer, so repeated calls can reuse one allocation.
+- `batch::cdist_into`, `batch::pairwise_into` and `batch::pdist_into` write
+  into a caller-provided buffer, so repeated calls can reuse one allocation.
 - `benchmarks/gemm-compare` and a CI job that times the dense kernel against
   the `gemm` and `matrixmultiply` crates on x86.
 
@@ -33,7 +33,9 @@ All notable changes to this project are documented here. The format follows
   `pairwise` results are now exactly symmetric.
 - `pairwise` and `pdist` compute only the upper triangle (like BLAS SYRK,
   on Accelerate through `ssyrk`/`dsyrk`), about 2 times faster than
-  `cdist(a, a)` for long vectors. `pdist` no longer fills the lower half.
+  `cdist(a, a)` for long vectors. `pdist` writes the condensed result
+  directly, without an `n × n` intermediate (half the memory, and up to
+  2 times faster for short vectors).
 - Accelerate calls are split into blocks of 2048 rows; a single call on
   large outputs with short vectors was up to 10 times slower.
 - Reworded the crate description and the README introduction.

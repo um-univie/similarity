@@ -1,16 +1,17 @@
 //! Times `A · Bᵀ` (f32, all multi-threaded) with similarity's kernels and
 //! with faer, the `gemm` crate and `matrixmultiply`, and prints Markdown
-//! tables in GFLOP/s. The symmetric table compares similarity's `pairwise`
-//! with faer's triangular product (both compute one triangle, like BLAS
-//! SYRK); its rate counts the full `2·n²·d` operations, so it can exceed the
-//! machine's peak. Run with `cargo run --release` (`--no-default-features`
-//! leaves out similarity's AVX-512 kernels and Accelerate). All libraries write into output
-//! buffers allocated before timing starts.
+//! tables in GFLOP/s. The symmetric table compares similarity's `pdist`
+//! (one triangle, condensed) and `pairwise` (one triangle, mirrored into a
+//! full matrix) with faer's triangular product (like BLAS SYRK); its rate
+//! counts the full `2·n²·d` operations, so it can exceed the machine's
+//! peak. All libraries write into output buffers allocated before timing
+//! starts. Run with `cargo run --release` (`--no-default-features` leaves
+//! out similarity's AVX-512 kernels and Accelerate).
 
 use faer::linalg::matmul::triangular::{self, BlockStructure};
 use faer::{linalg::matmul, Accum, Mat, MatRef, Par};
 use rand::Rng;
-use similarity::batch::{cdist_into, dense_backend, pairwise_into, Metric};
+use similarity::batch::{cdist_into, dense_backend, pairwise_into, pdist_into, Metric};
 use similarity::simd::Isa;
 use std::time::Instant;
 
@@ -44,8 +45,8 @@ fn main() {
         "|---|---|---|---|---|---|---|---|".to_string(),
     ];
     let mut sym = vec![
-        "| n | d | similarity pairwise | faer triangular |".to_string(),
-        "|---|---|---|---|".to_string(),
+        "| n | d | similarity pdist | similarity pairwise | faer triangular |".to_string(),
+        "|---|---|---|---|---|".to_string(),
     ];
     for n in SIZES {
         for d in DIMS {
@@ -59,6 +60,8 @@ fn main() {
             let mut scratch = vec![0f32; n * n];
             let t_euc = best(|| cdist_into(&rows, &rows, Metric::Euclidean, &mut scratch).unwrap());
             let t_pair = best(|| pairwise_into(&rows, Metric::Dot, &mut scratch).unwrap());
+            let mut condensed = vec![0f32; n * (n - 1) / 2];
+            let t_pdist = best(|| pdist_into(&rows, Metric::Dot, &mut condensed).unwrap());
             let t_ours = best(|| cdist_into(&rows, &rows, Metric::Dot, &mut ours).unwrap());
 
             let mut f = Mat::<f32>::zeros(n, n);
@@ -93,7 +96,7 @@ fn main() {
                 "| {n} | {d} | {} | {} | {} | {} | {} | {diff:.1e} |",
                 gflops(t_ours), gflops(t_faer), gflops(t_gemm), gflops(t_mm), gflops(t_euc)
             ));
-            sym.push(format!("| {n} | {d} | {} | {} |", gflops(t_pair), gflops(t_ftri)));
+            sym.push(format!("| {n} | {d} | {} | {} | {} |", gflops(t_pdist), gflops(t_pair), gflops(t_ftri)));
             eprintln!("done n={n} d={d}");
         }
     }

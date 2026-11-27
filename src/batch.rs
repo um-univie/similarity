@@ -216,10 +216,12 @@ fn tile_op(metric: Metric) -> Option<simd::TileOp> {
     }
 }
 
-/// `metric` between all rows of `a` and `b` (`a.len() × b.len()`, row
-/// major) with the GEMM-style kernel in `simd::tile`. Unless `same` is
-/// `Same::No`, only the upper triangle is computed (and mirrored with
-/// `Same::Mirrored`, which makes the result exactly symmetric).
+/// `metric` between all rows of `a` and `b` with the GEMM-style kernel in
+/// `simd::tile`. With `Same::No` the result is the full `a.len() × b.len()`
+/// row-major matrix. Otherwise `b` is `a` and only the upper triangle is
+/// computed: mirrored into a full `n × n` matrix with `Same::Mirrored`
+/// (exactly symmetric), or written in the condensed `pdist` layout with
+/// `Same::Condensed`.
 fn blocked<E, R1, R2>(a: &[R1], b: &[R2], metric: Metric, op: simd::TileOp, same: Same, data: &mut [E])
 where
     E: SimdFloat,
@@ -227,8 +229,13 @@ where
     R2: AsRef<[E]> + Sync,
 {
     let (m, n) = (a.len(), b.len());
-    debug_assert_eq!(data.len(), m * n);
-    if m == 0 || n == 0 {
+    let layout = match same {
+        Same::No => simd::Layout::Full,
+        Same::Mirrored => simd::Layout::Upper,
+        Same::Condensed => simd::Layout::Condensed,
+    };
+    debug_assert_eq!(data.len(), if same == Same::Condensed { n * n.saturating_sub(1) / 2 } else { m * n });
+    if m == 0 || n == 0 || data.is_empty() {
         return;
     }
     let ar: Vec<&[E]> = a.iter().map(|r| r.as_ref()).collect();
@@ -241,14 +248,17 @@ where
     let nb = if same { &na } else { &nb };
 
     // Turns raw dot products / squared distances into the metric, row by
-    // row while the row is still in cache.
-    let finish = |i: usize, row: &mut [E]| {
-        let first = if same { i } else { 0 };
+    // row while the row is still in cache. `row` holds columns `c0..`; with
+    // `same`, only columns `j >= i` are needed.
+    let finish = |i: usize, c0: usize, row: &mut [E]| {
+        let skip = if same { i.saturating_sub(c0) } else { 0 };
+        let row = &mut row[skip..];
+        let first = c0 + skip;
         match metric {
-            Metric::Euclidean => row[first..].iter_mut().for_each(|v| *v = v.sqrt()),
+            Metric::Euclidean => row.iter_mut().for_each(|v| *v = v.sqrt()),
             Metric::Cosine | Metric::CosineDistance => {
                 let distance = metric == Metric::CosineDistance;
-                for (v, &nj) in row[first..].iter_mut().zip(&nb[first..]) {
+                for (v, &nj) in row.iter_mut().zip(&nb[first..]) {
                     let den = na[i] * nj;
                     let c = if den == E::zero() { E::nan() } else { *v / den };
                     *v = if distance { E::one() - c } else { c };
@@ -257,8 +267,8 @@ where
             _ => {}
         }
     };
-    if !(op == simd::TileOp::Dot && accelerated_dot(&ar, &br, same, data, &finish)) {
-        simd::all_pairs(op, &ar, &br, data, same, &finish);
+    if !(op == simd::TileOp::Dot && accelerated_dot(&ar, &br, layout, data, &finish)) {
+        simd::all_pairs(op, &ar, &br, data, layout, &finish);
     }
 
     if mirror {
@@ -275,12 +285,11 @@ fn check_out<E>(out: &[E], len: usize) -> Result<(), BatchError> {
     }
 }
 
-/// Whether [`blocked`] gets `b == a`, and if so whether the lower triangle
-/// is filled in.
+/// Whether [`blocked`] gets `b == a`, and if so how the result is stored.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Same {
     No,
-    UpperOnly,
+    Condensed,
     Mirrored,
 }
 
@@ -331,24 +340,45 @@ fn mirror_upper<E: Copy + Send + Sync>(data: &mut [E], n: usize) {
 fn accelerated_dot<E: SimdFloat>(
     a: &[&[E]],
     b: &[&[E]],
-    same: bool,
+    layout: simd::Layout,
     out: &mut [E],
-    finish: &(dyn Fn(usize, &mut [E]) + Sync),
+    finish: &(dyn Fn(usize, usize, &mut [E]) + Sync),
 ) -> bool {
-    let done = if same { crate::accelerate::syrk_aat(a, out) } else { crate::accelerate::gemm_abt(a, b, out) };
-    if !done {
+    use crate::accelerate;
+    // Below this depth Accelerate is slower than the SIMD kernel (and its
+    // speed varies a lot between calls).
+    const MIN_DEPTH: usize = 64;
+    if a.first().is_none_or(|r| r.len() < MIN_DEPTH) {
         return false;
     }
     let n = b.len();
-    #[cfg(feature = "parallel")]
-    out.par_chunks_mut(n).enumerate().for_each(|(i, r)| finish(i, r));
-    #[cfg(not(feature = "parallel"))]
-    out.chunks_mut(n).enumerate().for_each(|(i, r)| finish(i, r));
+    match layout {
+        simd::Layout::Full | simd::Layout::Upper => {
+            let done =
+                if layout == simd::Layout::Upper { accelerate::syrk_aat(a, out) } else { accelerate::gemm_abt(a, b, out) };
+            if !done {
+                return false;
+            }
+            out.par_chunks_mut(n).enumerate().for_each(|(i, r)| finish(i, 0, r));
+        }
+        simd::Layout::Condensed => {
+            if !accelerate::syrk_condensed(a, out) {
+                return false;
+            }
+            simd::condensed_blocks(out, n, 1).into_par_iter().enumerate().for_each(|(i, r)| finish(i, i + 1, r));
+        }
+    }
     true
 }
 
 #[cfg(not(all(feature = "accelerate", feature = "parallel", target_os = "macos")))]
-fn accelerated_dot<E: SimdFloat>(_: &[&[E]], _: &[&[E]], _: bool, _: &mut [E], _: &(dyn Fn(usize, &mut [E]) + Sync)) -> bool {
+fn accelerated_dot<E: SimdFloat>(
+    _: &[&[E]],
+    _: &[&[E]],
+    _: simd::Layout,
+    _: &mut [E],
+    _: &(dyn Fn(usize, usize, &mut [E]) + Sync),
+) -> bool {
     false
 }
 
@@ -433,51 +463,47 @@ where
     E: SimdFloat,
     R: AsRef<[E]> + Sync,
 {
-    check_dims(rows, None)?;
     let n = rows.len();
-    if let Some(op) = tile_op(metric) {
-        let mut full = vec![E::zero(); n * n];
-        blocked(rows, rows, metric, op, Same::UpperOnly, &mut full);
-        return Ok(condense(&full, n));
-    }
-    let f = pair_fn(rows, rows, metric, true);
-    let row_vals = |i: usize| (i + 1..n).map(|j| f(i, j)).collect::<Vec<_>>();
-    #[cfg(feature = "parallel")]
-    let parts: Vec<Vec<E>> = (0..n).into_par_iter().map(row_vals).collect();
-    #[cfg(not(feature = "parallel"))]
-    let parts: Vec<Vec<E>> = (0..n).map(row_vals).collect();
-    Ok(parts.concat())
+    let mut out = vec![E::zero(); n * n.saturating_sub(1) / 2];
+    pdist_into(rows, metric, &mut out)?;
+    Ok(out)
 }
 
-/// Copies the strict upper triangle of an `n × n` matrix into the
-/// condensed `pdist` layout.
-fn condense<E: Copy + Send + Sync>(full: &[E], n: usize) -> Vec<E> {
-    let len = n * n.saturating_sub(1) / 2;
-    let mut out = Vec::with_capacity(len);
-    #[cfg(feature = "parallel")]
-    if n >= 512 {
-        // Row i starts at i·n − i(i+1)/2 in the condensed vector.
-        let mut rest = out.spare_capacity_mut();
-        let mut parts = Vec::with_capacity(n);
-        for i in 0..n {
-            let (head, tail) = rest.split_at_mut(n - i - 1);
-            parts.push((i, head));
-            rest = tail;
+/// [`pdist`] into a caller-provided buffer of length `n(n−1)/2`, e.g. to
+/// reuse one allocation across many calls. Every entry is overwritten, so
+/// the buffer does not need to be zeroed.
+///
+/// ```
+/// use similarity::batch::{pdist_into, Metric};
+/// let rows = [[0.0, 0.0], [3.0, 4.0], [0.0, 1.0]];
+/// let mut out = vec![0.0; 3];
+/// pdist_into(&rows, Metric::Euclidean, &mut out).unwrap();
+/// assert_eq!(out[..2], [5.0, 1.0]);
+/// ```
+pub fn pdist_into<E, R>(rows: &[R], metric: Metric, out: &mut [E]) -> Result<(), BatchError>
+where
+    E: SimdFloat,
+    R: AsRef<[E]> + Sync,
+{
+    check_dims(rows, None)?;
+    let n = rows.len();
+    check_out(out, n * n.saturating_sub(1) / 2)?;
+    if let Some(op) = tile_op(metric) {
+        blocked(rows, rows, metric, op, Same::Condensed, out);
+        return Ok(());
+    }
+    let f = pair_fn(rows, rows, metric, true);
+    let fill_row = |(i, row): (usize, &mut [E])| {
+        for (k, o) in row.iter_mut().enumerate() {
+            *o = f(i, i + 1 + k);
         }
-        parts.into_par_iter().for_each(|(i, dst)| {
-            for (d, &v) in dst.iter_mut().zip(&full[i * n + i + 1..(i + 1) * n]) {
-                d.write(v);
-            }
-        });
-        // SAFETY: the parts above cover all `len` spare slots and each was
-        // written once.
-        unsafe { out.set_len(len) };
-        return out;
-    }
-    for i in 0..n {
-        out.extend_from_slice(&full[i * n + i + 1..(i + 1) * n]);
-    }
-    out
+    };
+    let row_slices = simd::condensed_blocks(out, n, 1);
+    #[cfg(feature = "parallel")]
+    row_slices.into_par_iter().enumerate().for_each(fill_row);
+    #[cfg(not(feature = "parallel"))]
+    row_slices.into_iter().enumerate().for_each(fill_row);
+    Ok(())
 }
 
 /// `a.len() × b.len()` matrix of `metric` between every row of `a` and
@@ -677,6 +703,30 @@ pub fn rows_from_flat<E>(data: &[E], dim: usize) -> Result<Vec<&[E]>, BatchError
 mod tests {
     use super::*;
     use rand::Rng;
+
+    #[test]
+    fn pdist_matches_cdist_across_row_blocks() {
+        // More rows than one Accelerate row block (2048), depth above its
+        // minimum (64).
+        let n = 2100;
+        let rows: Vec<Vec<f32>> = (0..n).map(|i| (0..80).map(|j| ((i * 13 + j * 7) % 17) as f32 - 8.0).collect()).collect();
+        for metric in [Metric::Dot, Metric::Cosine, Metric::Euclidean] {
+            let full = cdist(&rows, &rows, metric).unwrap();
+            let cond = pdist(&rows, metric).unwrap();
+            let mut k = 0;
+            for i in 0..n {
+                for j in i + 1..n {
+                    let (x, y) = (cond[k], full.get(i, j));
+                    assert!((x - y).abs() <= 1e-4 * (1.0 + y.abs()) || (x.is_nan() && y.is_nan()), "{metric:?} ({i},{j})");
+                    k += 1;
+                }
+            }
+            let mut out = vec![f32::NAN; cond.len()];
+            pdist_into(&rows, metric, &mut out).unwrap();
+            assert!(out.iter().zip(&cond).all(|(x, y)| x == y || (x.is_nan() && y.is_nan())));
+        }
+        assert!(pdist_into(&rows, Metric::Dot, &mut [0.0f32; 3]).is_err());
+    }
 
     #[test]
     fn into_variants_overwrite_any_buffer() {
