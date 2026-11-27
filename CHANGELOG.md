@@ -15,8 +15,9 @@ All notable changes to this project are documented here. The format follows
   entropy against `SpectralLibrary`.
 
 - `accelerate` feature (on by default): dense dot product and cosine
-  matrices use Apple's Accelerate framework on macOS. No effect elsewhere.
-  `batch::dense_backend()` reports the backend in use.
+  matrices use Apple's Accelerate framework on macOS (only together with
+  `parallel`, since Accelerate starts its own threads). No effect
+  elsewhere. `batch::dense_backend()` reports the backend in use.
 - `benchmarks/gemm-compare` and a CI job that times the dense kernel against
   the `gemm` and `matrixmultiply` crates on x86.
 
@@ -25,6 +26,11 @@ All notable changes to this project are documented here. The format follows
   and Euclidean metrics with a GEMM-style kernel (packed operands, depth and
   column blocking), 2 to 4 times faster than before on large inputs.
   `pairwise` results are now exactly symmetric.
+- `pairwise` and `pdist` compute only the upper triangle (like BLAS SYRK,
+  on Accelerate through `ssyrk`/`dsyrk`), about 2 times faster than
+  `cdist(a, a)` for long vectors. `pdist` no longer fills the lower half.
+- Accelerate calls are split into blocks of 2048 rows; a single call on
+  large outputs with short vectors was up to 10 times slower.
 - Reworded the crate description and the README introduction.
 
 ## [0.3.0] - 2026-11-26

@@ -217,10 +217,10 @@ fn tile_op(metric: Metric) -> Option<simd::TileOp> {
 }
 
 /// `metric` between all rows of `a` and `b` (`a.len() × b.len()`, row
-/// major) with the GEMM-style kernel in `simd::tile`. With `same`, only the
-/// upper triangle is computed and then mirrored, so the result is exactly
-/// symmetric.
-fn blocked<E, R1, R2>(a: &[R1], b: &[R2], metric: Metric, op: simd::TileOp, same: bool) -> Vec<E>
+/// major) with the GEMM-style kernel in `simd::tile`. Unless `same` is
+/// `Same::No`, only the upper triangle is computed (and mirrored with
+/// `Same::Mirrored`, which makes the result exactly symmetric).
+fn blocked<E, R1, R2>(a: &[R1], b: &[R2], metric: Metric, op: simd::TileOp, same: Same) -> Vec<E>
 where
     E: SimdFloat,
     R1: AsRef<[E]> + Sync,
@@ -233,6 +233,8 @@ where
     }
     let ar: Vec<&[E]> = a.iter().map(|r| r.as_ref()).collect();
     let br: Vec<&[E]> = b.iter().map(|r| r.as_ref()).collect();
+    let mirror = same == Same::Mirrored;
+    let same = same != Same::No;
     let cos = matches!(metric, Metric::Cosine | Metric::CosineDistance);
     let na = if cos { norms(a) } else { Vec::new() };
     let nb = if cos && !same { norms(b) } else { Vec::new() };
@@ -255,32 +257,52 @@ where
             _ => {}
         }
     };
-    if !(op == simd::TileOp::Dot && accelerated_dot(&ar, &br, &mut data, &finish)) {
+    if !(op == simd::TileOp::Dot && accelerated_dot(&ar, &br, same, &mut data, &finish)) {
         simd::all_pairs(op, &ar, &br, &mut data, same, &finish);
     }
 
-    if same {
+    if mirror {
         mirror_upper(&mut data, n);
     }
     data
 }
 
+/// Whether [`blocked`] gets `b == a`, and if so whether the lower triangle
+/// is filled in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Same {
+    No,
+    UpperOnly,
+    Mirrored,
+}
+
 /// Copies the upper triangle of the `n × n` matrix into the lower one.
+///
+/// Works in `T × T` tiles so that the column-wise reads of the upper
+/// triangle stay in cache; a plain row loop reads one cache line per element
+/// and is several times slower on large matrices.
 fn mirror_upper<E: Copy + Send + Sync>(data: &mut [E], n: usize) {
+    const T: usize = 64;
     assert_eq!(data.len(), n * n);
     struct Ptr<E>(*mut E);
-    // SAFETY: shared across threads only as described in `copy_row`.
+    // SAFETY: shared across threads only as described in `copy_tile_row`.
     unsafe impl<E: Send> Send for Ptr<E> {}
     unsafe impl<E: Send> Sync for Ptr<E> {}
     impl<E: Copy> Ptr<E> {
-        /// Fills row `i` left of the diagonal from column `i` above it.
+        /// Fills rows `r0..r0 + T` left of the diagonal from the transposed
+        /// entries above it, one `T × T` tile at a time.
         ///
-        /// SAFETY: each call writes only entries `(i, j)` with `j < i`, which
-        /// no other call reads or writes, and reads only entries `(j, i)`
-        /// with `j < i`, which no call writes.
-        unsafe fn copy_row(&self, i: usize, n: usize) {
-            for j in 0..i {
-                *self.0.add(i * n + j) = *self.0.add(j * n + i);
+        /// SAFETY: each call writes only entries `(i, j)` with `j < i` in its
+        /// own rows, which no other call reads or writes, and reads only
+        /// entries `(j, i)` with `j < i`, which no call writes.
+        unsafe fn copy_tile_row(&self, r0: usize, n: usize) {
+            let r1 = (r0 + T).min(n);
+            for c0 in (0..r1).step_by(T) {
+                for i in r0..r1 {
+                    for j in c0..(c0 + T).min(i) {
+                        *self.0.add(i * n + j) = *self.0.add(j * n + i);
+                    }
+                }
             }
         }
     }
@@ -288,17 +310,25 @@ fn mirror_upper<E: Copy + Send + Sync>(data: &mut [E], n: usize) {
     // Below a few hundred rows the copy is cheaper than spawning tasks.
     #[cfg(feature = "parallel")]
     if n >= 512 {
-        (1..n).into_par_iter().for_each(|i| unsafe { p.copy_row(i, n) });
+        (0..n.div_ceil(T)).into_par_iter().for_each(|t| unsafe { p.copy_tile_row(t * T, n) });
         return;
     }
-    (1..n).for_each(|i| unsafe { p.copy_row(i, n) });
+    (0..n.div_ceil(T)).for_each(|t| unsafe { p.copy_tile_row(t * T, n) });
 }
 
 /// Dot products through Accelerate on macOS (see `crate::accelerate`),
-/// followed by `finish` on every row. Returns `false` if not used.
-#[cfg(all(feature = "accelerate", target_os = "macos"))]
-fn accelerated_dot<E: SimdFloat>(a: &[&[E]], b: &[&[E]], out: &mut [E], finish: &(dyn Fn(usize, &mut [E]) + Sync)) -> bool {
-    if !crate::accelerate::gemm_abt(a, b, out) {
+/// followed by `finish` on every row. With `same` (`b` is `a`), only the
+/// upper triangle is computed (SYRK). Returns `false` if not used.
+#[cfg(all(feature = "accelerate", feature = "parallel", target_os = "macos"))]
+fn accelerated_dot<E: SimdFloat>(
+    a: &[&[E]],
+    b: &[&[E]],
+    same: bool,
+    out: &mut [E],
+    finish: &(dyn Fn(usize, &mut [E]) + Sync),
+) -> bool {
+    let done = if same { crate::accelerate::syrk_aat(a, out) } else { crate::accelerate::gemm_abt(a, b, out) };
+    if !done {
         return false;
     }
     let n = b.len();
@@ -309,16 +339,16 @@ fn accelerated_dot<E: SimdFloat>(a: &[&[E]], b: &[&[E]], out: &mut [E], finish: 
     true
 }
 
-#[cfg(not(all(feature = "accelerate", target_os = "macos")))]
-fn accelerated_dot<E: SimdFloat>(_: &[&[E]], _: &[&[E]], _: &mut [E], _: &(dyn Fn(usize, &mut [E]) + Sync)) -> bool {
+#[cfg(not(all(feature = "accelerate", feature = "parallel", target_os = "macos")))]
+fn accelerated_dot<E: SimdFloat>(_: &[&[E]], _: &[&[E]], _: bool, _: &mut [E], _: &(dyn Fn(usize, &mut [E]) + Sync)) -> bool {
     false
 }
 
 /// Backend used for dense dot-product and cosine matrices in [`cdist`],
 /// [`pairwise`] and [`pdist`]: `"accelerate"` on macOS with the default
-/// `accelerate` feature, otherwise `"simd"`.
+/// `accelerate` and `parallel` features, otherwise `"simd"`.
 pub fn dense_backend() -> &'static str {
-    if cfg!(all(feature = "accelerate", target_os = "macos")) {
+    if cfg!(all(feature = "accelerate", feature = "parallel", target_os = "macos")) {
         "accelerate"
     } else {
         "simd"
@@ -329,7 +359,8 @@ pub fn dense_backend() -> &'static str {
 ///
 /// Only the upper triangle is computed; it is mirrored into the lower
 /// triangle. The diagonal is computed too (so cosine of a zero row is
-/// `NaN`, as everywhere else).
+/// `NaN`, as everywhere else). If one triangle is enough, [`pdist`] skips
+/// the mirroring and returns half the memory.
 ///
 /// ```
 /// use similarity::batch::{pairwise, Metric};
@@ -346,7 +377,7 @@ where
     check_dims(rows, None)?;
     let n = rows.len();
     if let Some(op) = tile_op(metric) {
-        return Ok(DistanceMatrix { rows: n, cols: n, data: blocked(rows, rows, metric, op, true) });
+        return Ok(DistanceMatrix { rows: n, cols: n, data: blocked(rows, rows, metric, op, Same::Mirrored) });
     }
     let f = pair_fn(rows, rows, metric, true);
     let mut data = vec![E::zero(); n * n];
@@ -371,6 +402,7 @@ where
 
 /// Condensed upper-triangle vector of `metric` (like SciPy `pdist`):
 /// entries `(0,1), (0,2), …, (0,n−1), (1,2), …` with length `n(n−1)/2`.
+/// Only the upper triangle is computed and nothing is mirrored.
 pub fn pdist<E, R>(rows: &[R], metric: Metric) -> Result<Vec<E>, BatchError>
 where
     E: SimdFloat,
@@ -379,12 +411,8 @@ where
     check_dims(rows, None)?;
     let n = rows.len();
     if let Some(op) = tile_op(metric) {
-        let full = blocked(rows, rows, metric, op, true);
-        let mut out = Vec::with_capacity(n * n.saturating_sub(1) / 2);
-        for i in 0..n {
-            out.extend_from_slice(&full[i * n + i + 1..(i + 1) * n]);
-        }
-        return Ok(out);
+        let full = blocked(rows, rows, metric, op, Same::UpperOnly);
+        return Ok(condense(&full, n));
     }
     let f = pair_fn(rows, rows, metric, true);
     let row_vals = |i: usize| (i + 1..n).map(|j| f(i, j)).collect::<Vec<_>>();
@@ -393,6 +421,37 @@ where
     #[cfg(not(feature = "parallel"))]
     let parts: Vec<Vec<E>> = (0..n).map(row_vals).collect();
     Ok(parts.concat())
+}
+
+/// Copies the strict upper triangle of an `n × n` matrix into the
+/// condensed `pdist` layout.
+fn condense<E: Copy + Send + Sync>(full: &[E], n: usize) -> Vec<E> {
+    let len = n * n.saturating_sub(1) / 2;
+    let mut out = Vec::with_capacity(len);
+    #[cfg(feature = "parallel")]
+    if n >= 512 {
+        // Row i starts at i·n − i(i+1)/2 in the condensed vector.
+        let mut rest = out.spare_capacity_mut();
+        let mut parts = Vec::with_capacity(n);
+        for i in 0..n {
+            let (head, tail) = rest.split_at_mut(n - i - 1);
+            parts.push((i, head));
+            rest = tail;
+        }
+        parts.into_par_iter().for_each(|(i, dst)| {
+            for (d, &v) in dst.iter_mut().zip(&full[i * n + i + 1..(i + 1) * n]) {
+                d.write(v);
+            }
+        });
+        // SAFETY: the parts above cover all `len` spare slots and each was
+        // written once.
+        unsafe { out.set_len(len) };
+        return out;
+    }
+    for i in 0..n {
+        out.extend_from_slice(&full[i * n + i + 1..(i + 1) * n]);
+    }
+    out
 }
 
 /// `a.len() × b.len()` matrix of `metric` between every row of `a` and
@@ -419,7 +478,7 @@ where
     }
     let (m, n) = (a.len(), b.len());
     if let Some(op) = tile_op(metric) {
-        return Ok(DistanceMatrix { rows: m, cols: n, data: blocked(a, b, metric, op, false) });
+        return Ok(DistanceMatrix { rows: m, cols: n, data: blocked(a, b, metric, op, Same::No) });
     }
     let f = pair_fn(a, b, metric, false);
     let mut data = vec![E::zero(); m * n];

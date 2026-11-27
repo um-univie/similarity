@@ -231,7 +231,7 @@ similarity = { version = "0.4", features = ["parallel", "fft", "accelerate"] }
 - **`parallel`**: Enables Rayon-based parallel processing for large datasets
 - **`fft`**: Enables FFT-based optimizations for cross-correlation and convolution
 - **`avx512`** (off by default): compiles AVX-512 kernels, used at runtime when the CPU supports them. Needs Rust ≥ 1.89.
-- **`accelerate`** (on by default): uses Apple's Accelerate framework for dense dot product and cosine matrices on macOS. It has no effect on other platforms. `similarity::batch::dense_backend()` reports which backend is in use.
+- **`accelerate`** (on by default): uses Apple's Accelerate framework for dense dot product and cosine matrices on macOS. Accelerate runs on several threads, so it is only used when `parallel` is also on; without `parallel` nothing starts threads. It has no effect on other platforms. `similarity::batch::dense_backend()` reports which backend is in use.
 
 Minimum supported Rust version: **1.83**.
 

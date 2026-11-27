@@ -37,7 +37,8 @@ fft = ["rustfft"]
 # Enables AVX-512 kernels on x86-64 CPUs that support them (runtime-detected).
 avx512 = ["pulp/x86-v4"]
 # Uses Apple's Accelerate framework for dense dot-product and cosine
-# matrices on macOS. Has no effect on other platforms.
+# matrices on macOS. Accelerate runs on several threads, so it is used only
+# together with `parallel`. Has no effect on other platforms.
 accelerate = []
 
 [package.metadata.docs.rs]
