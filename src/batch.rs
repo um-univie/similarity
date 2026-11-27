@@ -220,16 +220,16 @@ fn tile_op(metric: Metric) -> Option<simd::TileOp> {
 /// major) with the GEMM-style kernel in `simd::tile`. Unless `same` is
 /// `Same::No`, only the upper triangle is computed (and mirrored with
 /// `Same::Mirrored`, which makes the result exactly symmetric).
-fn blocked<E, R1, R2>(a: &[R1], b: &[R2], metric: Metric, op: simd::TileOp, same: Same) -> Vec<E>
+fn blocked<E, R1, R2>(a: &[R1], b: &[R2], metric: Metric, op: simd::TileOp, same: Same, data: &mut [E])
 where
     E: SimdFloat,
     R1: AsRef<[E]> + Sync,
     R2: AsRef<[E]> + Sync,
 {
     let (m, n) = (a.len(), b.len());
-    let mut data = vec![E::zero(); m * n];
+    debug_assert_eq!(data.len(), m * n);
     if m == 0 || n == 0 {
-        return data;
+        return;
     }
     let ar: Vec<&[E]> = a.iter().map(|r| r.as_ref()).collect();
     let br: Vec<&[E]> = b.iter().map(|r| r.as_ref()).collect();
@@ -257,14 +257,22 @@ where
             _ => {}
         }
     };
-    if !(op == simd::TileOp::Dot && accelerated_dot(&ar, &br, same, &mut data, &finish)) {
-        simd::all_pairs(op, &ar, &br, &mut data, same, &finish);
+    if !(op == simd::TileOp::Dot && accelerated_dot(&ar, &br, same, data, &finish)) {
+        simd::all_pairs(op, &ar, &br, data, same, &finish);
     }
 
     if mirror {
-        mirror_upper(&mut data, n);
+        mirror_upper(data, n);
     }
-    data
+}
+
+/// Checks that a caller-provided output buffer has `len` elements.
+fn check_out<E>(out: &[E], len: usize) -> Result<(), BatchError> {
+    if out.len() == len {
+        Ok(())
+    } else {
+        Err(BatchError::InvalidArgument("output buffer has the wrong length"))
+    }
 }
 
 /// Whether [`blocked`] gets `b == a`, and if so whether the lower triangle
@@ -374,30 +382,47 @@ where
     E: SimdFloat,
     R: AsRef<[E]> + Sync,
 {
+    let n = rows.len();
+    let mut data = vec![E::zero(); n * n];
+    pairwise_into(rows, metric, &mut data)?;
+    Ok(DistanceMatrix { rows: n, cols: n, data })
+}
+
+/// [`pairwise`] into a caller-provided row-major buffer of length `n × n`,
+/// e.g. to reuse one allocation across many calls. Every entry is
+/// overwritten, so the buffer does not need to be zeroed.
+///
+/// ```
+/// use similarity::batch::{pairwise_into, Metric};
+/// let rows = [[0.0, 0.0], [3.0, 4.0]];
+/// let mut out = vec![0.0; 4];
+/// pairwise_into(&rows, Metric::Euclidean, &mut out).unwrap();
+/// assert_eq!(out, [0.0, 5.0, 5.0, 0.0]);
+/// ```
+pub fn pairwise_into<E, R>(rows: &[R], metric: Metric, out: &mut [E]) -> Result<(), BatchError>
+where
+    E: SimdFloat,
+    R: AsRef<[E]> + Sync,
+{
     check_dims(rows, None)?;
     let n = rows.len();
+    check_out(out, n * n)?;
     if let Some(op) = tile_op(metric) {
-        return Ok(DistanceMatrix { rows: n, cols: n, data: blocked(rows, rows, metric, op, Same::Mirrored) });
+        blocked(rows, rows, metric, op, Same::Mirrored, out);
+        return Ok(());
     }
     let f = pair_fn(rows, rows, metric, true);
-    let mut data = vec![E::zero(); n * n];
-
-    let fill_row = |i: usize, out: &mut [E]| {
-        for (j, o) in out.iter_mut().enumerate().skip(i) {
+    let fill_row = |i: usize, row: &mut [E]| {
+        for (j, o) in row.iter_mut().enumerate().skip(i) {
             *o = f(i, j);
         }
     };
     #[cfg(feature = "parallel")]
-    data.par_chunks_mut(n.max(1)).enumerate().for_each(|(i, r)| fill_row(i, r));
+    out.par_chunks_mut(n.max(1)).enumerate().for_each(|(i, r)| fill_row(i, r));
     #[cfg(not(feature = "parallel"))]
-    data.chunks_mut(n.max(1)).enumerate().for_each(|(i, r)| fill_row(i, r));
-
-    for i in 0..n {
-        for j in 0..i {
-            data[i * n + j] = data[j * n + i];
-        }
-    }
-    Ok(DistanceMatrix { rows: n, cols: n, data })
+    out.chunks_mut(n.max(1)).enumerate().for_each(|(i, r)| fill_row(i, r));
+    mirror_upper(out, n);
+    Ok(())
 }
 
 /// Condensed upper-triangle vector of `metric` (like SciPy `pdist`):
@@ -411,7 +436,8 @@ where
     check_dims(rows, None)?;
     let n = rows.len();
     if let Some(op) = tile_op(metric) {
-        let full = blocked(rows, rows, metric, op, Same::UpperOnly);
+        let mut full = vec![E::zero(); n * n];
+        blocked(rows, rows, metric, op, Same::UpperOnly, &mut full);
         return Ok(condense(&full, n));
     }
     let f = pair_fn(rows, rows, metric, true);
@@ -470,6 +496,30 @@ where
     R1: AsRef<[E]> + Sync,
     R2: AsRef<[E]> + Sync,
 {
+    let (m, n) = (a.len(), b.len());
+    let mut data = vec![E::zero(); m * n];
+    cdist_into(a, b, metric, &mut data)?;
+    Ok(DistanceMatrix { rows: m, cols: n, data })
+}
+
+/// [`cdist`] into a caller-provided row-major buffer of length
+/// `a.len() × b.len()`, e.g. to reuse one allocation across many calls.
+/// Every entry is overwritten, so the buffer does not need to be zeroed.
+///
+/// ```
+/// use similarity::batch::{cdist_into, Metric};
+/// let a = [[0.0, 0.0]];
+/// let b = [[3.0, 4.0], [1.0, 0.0]];
+/// let mut out = vec![0.0; 2];
+/// cdist_into(&a, &b, Metric::Manhattan, &mut out).unwrap();
+/// assert_eq!(out, [7.0, 1.0]);
+/// ```
+pub fn cdist_into<E, R1, R2>(a: &[R1], b: &[R2], metric: Metric, out: &mut [E]) -> Result<(), BatchError>
+where
+    E: SimdFloat,
+    R1: AsRef<[E]> + Sync,
+    R2: AsRef<[E]> + Sync,
+{
     let dim = check_dims(a, None)?;
     if !a.is_empty() {
         check_dims(b, Some(dim))?;
@@ -477,21 +527,22 @@ where
         check_dims(b, None)?;
     }
     let (m, n) = (a.len(), b.len());
+    check_out(out, m * n)?;
     if let Some(op) = tile_op(metric) {
-        return Ok(DistanceMatrix { rows: m, cols: n, data: blocked(a, b, metric, op, Same::No) });
+        blocked(a, b, metric, op, Same::No, out);
+        return Ok(());
     }
     let f = pair_fn(a, b, metric, false);
-    let mut data = vec![E::zero(); m * n];
-    let fill_row = |i: usize, out: &mut [E]| {
-        for (j, o) in out.iter_mut().enumerate() {
+    let fill_row = |i: usize, row: &mut [E]| {
+        for (j, o) in row.iter_mut().enumerate() {
             *o = f(i, j);
         }
     };
     #[cfg(feature = "parallel")]
-    data.par_chunks_mut(n.max(1)).enumerate().for_each(|(i, r)| fill_row(i, r));
+    out.par_chunks_mut(n.max(1)).enumerate().for_each(|(i, r)| fill_row(i, r));
     #[cfg(not(feature = "parallel"))]
-    data.chunks_mut(n.max(1)).enumerate().for_each(|(i, r)| fill_row(i, r));
-    Ok(DistanceMatrix { rows: m, cols: n, data })
+    out.chunks_mut(n.max(1)).enumerate().for_each(|(i, r)| fill_row(i, r));
+    Ok(())
 }
 
 /// `metric(query, row)` for every row.
@@ -626,6 +677,26 @@ pub fn rows_from_flat<E>(data: &[E], dim: usize) -> Result<Vec<&[E]>, BatchError
 mod tests {
     use super::*;
     use rand::Rng;
+
+    #[test]
+    fn into_variants_overwrite_any_buffer() {
+        let rows: Vec<Vec<f64>> = (0..37).map(|i| (0..19).map(|j| ((i * 7 + j * 3) % 11) as f64 - 5.0).collect()).collect();
+        let other: Vec<Vec<f64>> = rows.iter().take(23).map(|r| r.iter().rev().copied().collect()).collect();
+        for metric in [Metric::Dot, Metric::Cosine, Metric::Euclidean, Metric::Manhattan] {
+            let want = cdist(&rows, &other, metric).unwrap().data;
+            let mut out = vec![f64::NAN; want.len()];
+            cdist_into(&rows, &other, metric, &mut out).unwrap();
+            assert_eq!(out, want, "{metric:?}");
+
+            let want = pairwise(&rows, metric).unwrap().data;
+            let mut out = vec![1e300; want.len()];
+            pairwise_into(&rows, metric, &mut out).unwrap();
+            assert!(out.iter().zip(&want).all(|(x, y)| x == y || (x.is_nan() && y.is_nan())), "{metric:?}");
+        }
+        let mut short = vec![0.0; 5];
+        assert!(cdist_into(&rows, &other, Metric::Dot, &mut short).is_err());
+        assert!(pairwise_into(&rows, Metric::Dot, &mut short).is_err());
+    }
 
     #[test]
     fn blocked_metrics_match_pairwise_eval() {

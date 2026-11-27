@@ -18,6 +18,8 @@ All notable changes to this project are documented here. The format follows
   matrices use Apple's Accelerate framework on macOS (only together with
   `parallel`, since Accelerate starts its own threads). No effect
   elsewhere. `batch::dense_backend()` reports the backend in use.
+- `batch::cdist_into` and `batch::pairwise_into` write into a caller-provided
+  buffer, so repeated calls can reuse one allocation.
 - `benchmarks/gemm-compare` and a CI job that times the dense kernel against
   the `gemm` and `matrixmultiply` crates on x86.
 
