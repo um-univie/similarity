@@ -235,9 +235,18 @@ impl<E: SimdFloat, const MR: usize, const V: usize> RowBlock<'_, '_, '_, E, MR, 
                                 if start >= w {
                                     break;
                                 }
-                                let dst = &mut row[start..(start + lanes).min(w)];
-                                let x = if k0 == 0 { x } else { E::v_add(s, x, E::v_partial_load(s, dst)) };
-                                E::v_partial_store(s, dst, x);
+                                if start + lanes <= w {
+                                    // Full vector: plain store. pulp's partial
+                                    // load/store pick a mask at run time,
+                                    // which is much slower (on AVX2 an
+                                    // indirect call per access).
+                                    let dst = &mut E::as_mut_simd::<S>(&mut row[start..start + lanes]).0[0];
+                                    *dst = if k0 == 0 { x } else { E::v_add(s, x, *dst) };
+                                } else {
+                                    let dst = &mut row[start..w];
+                                    let x = if k0 == 0 { x } else { E::v_add(s, x, E::v_partial_load(s, dst)) };
+                                    E::v_partial_store(s, dst, x);
+                                }
                             }
                         }
                     }
