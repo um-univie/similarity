@@ -56,7 +56,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-similarity = "0.4"
+similarity = "0.3"
 ```
 
 ### Trait-Based API Examples
@@ -225,7 +225,7 @@ See [`python/README.md`](python/README.md).
 
 ```toml
 [dependencies]
-similarity = { version = "0.4", features = ["parallel", "fft", "accelerate", "avx512"] }
+similarity = { version = "0.3", features = ["parallel", "fft", "accelerate", "avx512"] }
 ```
 
 - **`parallel`**: Enables Rayon-based parallel processing for large datasets
